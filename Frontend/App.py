@@ -41,28 +41,27 @@ def login_page():
 
 
 def chat_page():
-    st.title("CampusMind 🎓")
-    st.write(f"Welcome, **{st.session_state.username}**!")
-
-    if st.button("Logout"):
-        st.session_state.logged_in = False
-        st.session_state.username = ""
-        st.rerun()
-
-    st.divider()
-
     with st.sidebar:
-        st.header("📄 Your Documents")
-        uploaded_file = st.file_uploader(
-            "Upload a policy document",
-            type=["pdf", "docx", "txt"]
-        )
-        if uploaded_file is not None:
-            st.success(f"'{uploaded_file.name}' selected (not yet processed — backend coming soon)")
+        st.title("CampusMind 🎓")
+        st.write(f"👤 {st.session_state.username}")
+
+        page = st.radio("Navigate", ["💬 Chat", "📄 My Documents", "⚙️ Settings"])
 
         st.divider()
-        st.write("**Uploaded so far:**")
+        if st.button("Logout"):
+            st.session_state.logged_in = False
+            st.session_state.username = ""
+            st.rerun()
 
+    if page == "💬 Chat":
+        chat_section()
+    elif page == "📄 My Documents":
+        documents_section()
+    elif page == "⚙️ Settings":
+        settings_section()
+
+
+def chat_section():
     st.subheader("Ask a question")
 
     if "chat_history" not in st.session_state:
@@ -83,6 +82,49 @@ def chat_page():
         st.session_state.chat_history.append({"role": "assistant", "content": fake_answer})
         with st.chat_message("assistant"):
             st.write(fake_answer)
+
+
+def documents_section():
+    st.subheader("📄 My Documents")
+
+    if "documents" not in st.session_state:
+        st.session_state.documents = [
+            {"name": "academic_regulations.pdf", "size": "1.2 MB"},
+            {"name": "placement_policy.pdf", "size": "850 KB"},
+        ]
+
+    uploaded_file = st.file_uploader(
+        "Upload a new policy document",
+        type=["pdf", "docx", "txt"]
+    )
+    if uploaded_file is not None:
+        st.session_state.documents.append({
+            "name": uploaded_file.name,
+            "size": f"{round(uploaded_file.size / 1024, 1)} KB"
+        })
+        st.success(f"'{uploaded_file.name}' added (not yet processed — backend coming soon)")
+
+    st.divider()
+
+    if not st.session_state.documents:
+        st.info("No documents uploaded yet.")
+    else:
+        for i, doc in enumerate(st.session_state.documents):
+            col1, col2, col3 = st.columns([3, 1, 1])
+            col1.write(f"📄 {doc['name']}")
+            col2.write(doc['size'])
+            if col3.button("Delete", key=f"delete_{i}"):
+                st.session_state.documents.pop(i)
+                st.rerun()
+
+
+def settings_section():
+    st.subheader("⚙️ Settings")
+    st.write(f"**Username:** {st.session_state.username}")
+    st.write("**Account type:** Student")
+    st.divider()
+    st.write("More settings coming soon (change password, notification preferences, etc.)")
+
 
 if st.session_state.logged_in:
     chat_page()
