@@ -8,6 +8,8 @@ campusmind.db
 # C extensions
 *.so
 
+chroma_db/
+
 uploaded_docs/
 chroma_db/
 
