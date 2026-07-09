@@ -1,6 +1,20 @@
 import streamlit as st
 
 st.set_page_config(page_title="CampusMind", page_icon="🎓")
+st.markdown("""
+<style>
+    .stButton button {
+        border-radius: 8px;
+        font-weight: 600;
+    }
+    [data-testid="stSidebar"] {
+        background-color: #f5f5f7;
+    }
+    .stChatMessage {
+        border-radius: 12px;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 
 if "logged_in" not in st.session_state:
@@ -79,10 +93,14 @@ def chat_page():
         with st.chat_message("user"):
             st.write(user_question)
 
-        fake_answer = "This is a placeholder answer. The real AI response will come once the backend RAG pipeline is connected."
-        st.session_state.chat_history.append({"role": "assistant", "content": fake_answer})
         with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                import time
+                time.sleep(1.2)  
+                fake_answer = "This is a placeholder answer. The real AI response will come once the backend RAG pipeline is connected."
             st.write(fake_answer)
+
+        st.session_state.chat_history.append({"role": "assistant", "content": fake_answer})
 
 if st.session_state.logged_in:
     chat_page()
