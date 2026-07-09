@@ -8,6 +8,9 @@ campusmind.db
 # C extensions
 *.so
 
+uploaded_docs/
+chroma_db/
+
 # Distribution / packaging
 .Python
 build/
