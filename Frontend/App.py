@@ -107,7 +107,33 @@ if "logged_in" not in st.session_state:
 if "username" not in st.session_state:
     st.session_state.username = ""
 
+if "app_loaded" not in st.session_state:
+    st.session_state.app_loaded = False
 
+if not st.session_state.app_loaded:
+    splash = st.empty()
+    with splash.container():
+        st.markdown(f"""
+        <div style="display:flex; flex-direction:column; align-items:center; justify-content:center; height:70vh;">
+            <div style="font-size:64px; margin-bottom:10px;">🎓</div>
+            <div style="font-family:'Georgia', serif; font-size:32px; color:{text}; letter-spacing:1px;">
+                CampusMind
+            </div>
+            <div style="color:{subtext}; margin-top:8px; font-size:14px;">
+                Opening your knowledge base...
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        progress_bar = st.progress(0)
+        import time
+        for pct in range(0, 101, 5):
+            time.sleep(0.03)
+            progress_bar.progress(pct)
+
+    st.session_state.app_loaded = True
+    splash.empty()
+    st.rerun()
 def login_page():
     st.title("CampusMind 🎓")
     st.subheader("AI Knowledge Assistant")
