@@ -1,6 +1,8 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
+campusmind.db
+*.db
 *$py.class
 
 # C extensions
