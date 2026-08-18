@@ -1,16 +1,85 @@
-from fastapi import APIRouter, Depends
+﻿from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.db.database import get_db
 from app.core.deps import get_current_user
 from app.models.user import User
-from app.schemas.chat import ChatRequest, ChatResponse
+from app.models.chat import Conversation, Message
+from app.schemas.chat import ChatRequest, ChatResponse, ConversationOut, ConversationDetail
 from app.services.rag import answer_question
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
+
 @router.post("/ask", response_model=ChatResponse)
 def ask_question(
     request: ChatRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    history = [msg.model_dump() for msg in request.chat_history] if request.chat_history else None
-    result = answer_question(request.question, chat_history=history)
-    return result
+    if request.conversation_id:
+        conversation = db.query(Conversation).filter(
+            Conversation.id == request.conversation_id,
+            Conversation.user_id == current_user.id,
+        ).first()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+    else:
+        conversation = Conversation(
+            user_id=current_user.id,
+            title=request.question[:50],
+        )
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+
+    previous_messages = db.query(Message).filter(
+        Message.conversation_id == conversation.id
+    ).order_by(Message.created_at).all()
+
+    chat_history = [{"role": m.role, "content": m.content} for m in previous_messages]
+
+    result = answer_question(request.question, chat_history=chat_history)
+
+    user_msg = Message(conversation_id=conversation.id, role="user", content=request.question)
+    db.add(user_msg)
+
+    assistant_msg = Message(
+        conversation_id=conversation.id,
+        role="assistant",
+        content=result["answer"],
+        sources=",".join(result["sources"]),
+    )
+    db.add(assistant_msg)
+    db.commit()
+
+    return {
+        "answer": result["answer"],
+        "sources": result["sources"],
+        "conversation_id": conversation.id,
+    }
+
+
+@router.get("/conversations", response_model=list[ConversationOut])
+def list_conversations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return db.query(Conversation).filter(
+        Conversation.user_id == current_user.id
+    ).order_by(Conversation.created_at.desc()).all()
+
+
+@router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
+def get_conversation(
+    conversation_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    conversation = db.query(Conversation).filter(
+        Conversation.id == conversation_id,
+        Conversation.user_id == current_user.id,
+    ).first()
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
