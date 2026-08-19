@@ -69,8 +69,37 @@ def extract_pdf_with_ocr(file_path: str) -> list[Document]:
 def load_document(file_path: str, file_type: str) -> list[Document]:
     """Load a PDF or DOCX file with automatic fallback to OCR for scanned documents."""
     if file_type == "docx":
-        loader = Docx2txtLoader(file_path)
-        return loader.load()
+        # 1. Try Docx2txtLoader
+        try:
+            from langchain_community.document_loaders import Docx2txtLoader
+            loader = Docx2txtLoader(file_path)
+            docs = loader.load()
+            if docs and sum(len(d.page_content.strip()) for d in docs) > 0:
+                return docs
+        except Exception as e:
+            print(f"[Docx2txtLoader Warning] on {file_path}: {e}")
+
+        # 2. Native python-docx fallback (handles paragraphs and tables)
+        try:
+            import docx
+            doc = docx.Document(file_path)
+            full_text = []
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    full_text.append(para.text.strip())
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    if row_text:
+                        full_text.append(row_text)
+            text = "\n\n".join(full_text)
+            if text.strip():
+                return [Document(page_content=text.strip(), metadata={"source": file_path})]
+        except Exception as e:
+            print(f"[python-docx Error] on {file_path}: {e}")
+            raise RuntimeError(f"Could not extract text from docx file: {e}")
+
+        return []
 
     elif file_type == "pdf":
         # 1. Attempt digital text extraction with PyPDFLoader
