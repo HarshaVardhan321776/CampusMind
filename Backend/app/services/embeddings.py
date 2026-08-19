@@ -1,28 +1,106 @@
 import os
+import numpy as np
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import Chroma
+from langchain_core.documents import Document
 
-CHROMA_DIR = "chroma_db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
 COLLECTION_NAME = "campusmind_docs"
 
 embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
 
+# Initialize OCR Engine for scanned/handwritten documents
+_ocr_engine = None
 
-def load_document(file_path: str, file_type: str):
-    """Load a PDF or DOCX file into LangChain Document objects."""
-    if file_type == "pdf":
-        loader = PyPDFLoader(file_path)
-    elif file_type == "docx":
+def get_ocr_engine():
+    global _ocr_engine
+    if _ocr_engine is None:
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+            _ocr_engine = RapidOCR()
+        except Exception as e:
+            print(f"[OCR Init Warning]: Could not initialize RapidOCR: {e}")
+            _ocr_engine = False
+    return _ocr_engine
+
+
+def extract_pdf_with_ocr(file_path: str) -> list[Document]:
+    """Extract text from scanned or image-based PDF using RapidOCR."""
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        print("[PDF Warning]: pypdfium2 not installed.")
+        return []
+
+    engine = get_ocr_engine()
+    if not engine:
+        return []
+
+    documents = []
+    try:
+        pdf = pdfium.PdfDocument(file_path)
+        for idx in range(len(pdf)):
+            page = pdf[idx]
+            # Render page to bitmap image
+            bitmap = page.render(scale=1.5)
+            pil_image = bitmap.to_pil()
+            img_np = np.array(pil_image)
+
+            ocr_res, _ = engine(img_np)
+            if ocr_res:
+                page_lines = [line[1] for line in ocr_res if line[1].strip()]
+                page_text = "\n".join(page_lines)
+                if len(page_text.strip()) > 10:
+                    documents.append(
+                        Document(
+                            page_content=page_text.strip(),
+                            metadata={"source": file_path, "page": idx + 1}
+                        )
+                    )
+    except Exception as e:
+        print(f"[OCR Extraction Error] on {file_path}: {e}")
+
+    return documents
+
+
+def load_document(file_path: str, file_type: str) -> list[Document]:
+    """Load a PDF or DOCX file with automatic fallback to OCR for scanned documents."""
+    if file_type == "docx":
         loader = Docx2txtLoader(file_path)
+        return loader.load()
+
+    elif file_type == "pdf":
+        # 1. Attempt digital text extraction with PyPDFLoader
+        digital_docs = []
+        try:
+            loader = PyPDFLoader(file_path)
+            digital_docs = loader.load()
+        except Exception as e:
+            print(f"[PyPDFLoader Warning] on {file_path}: {e}")
+
+        # Check quality of extracted digital text
+        total_text_length = sum(len(doc.page_content.strip()) for doc in digital_docs)
+        num_pages = len(digital_docs) if digital_docs else 1
+        avg_chars_per_page = total_text_length / max(1, num_pages)
+
+        # If digital text is missing, very sparse (< 40 chars/page), or empty, trigger OCR
+        if total_text_length < 100 or avg_chars_per_page < 40:
+            print(f"[CampusMind] Scanned/Image PDF detected for '{os.path.basename(file_path)}' (only {total_text_length} digital chars found). Running OCR pipeline...")
+            ocr_docs = extract_pdf_with_ocr(file_path)
+            if ocr_docs and sum(len(d.page_content) for d in ocr_docs) > total_text_length:
+                print(f"[CampusMind] OCR successfully extracted {len(ocr_docs)} pages with {sum(len(d.page_content) for d in ocr_docs)} characters!")
+                return ocr_docs
+
+        return digital_docs
+
     else:
         raise ValueError(f"Unsupported file type: {file_type}")
 
-    return loader.load()
 
-
-def chunk_documents(documents, chunk_size: int = 1000, chunk_overlap: int = 150):
+def chunk_documents(documents: list[Document], chunk_size: int = 800, chunk_overlap: int = 120):
     """Split loaded documents into smaller overlapping chunks."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -31,8 +109,12 @@ def chunk_documents(documents, chunk_size: int = 1000, chunk_overlap: int = 150)
     return splitter.split_documents(documents)
 
 
-def embed_and_store(chunks, source_filename: str, document_id: int):
+def embed_and_store(chunks: list[Document], source_filename: str, document_id: int):
     """Generate embeddings for chunks and store them in ChromaDB."""
+    if not chunks:
+        print(f"[Embed Warning]: No text chunks to embed for {source_filename}")
+        return 0
+
     for chunk in chunks:
         chunk.metadata["source"] = source_filename
         chunk.metadata["document_id"] = document_id

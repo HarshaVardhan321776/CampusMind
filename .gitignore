@@ -8,10 +8,14 @@ campusmind.db
 # C extensions
 *.so
 
-chroma_db/
+# OS files
+.DS_Store
+*/.DS_Store
 
-uploaded_docs/
 chroma_db/
+uploaded_docs/
+Backend/uploads/
+Backend/chroma_db/
 
 # Distribution / packaging
 .Python

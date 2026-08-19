@@ -11,8 +11,21 @@ from app.services.embeddings import process_document
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
-UPLOAD_DIR = "uploaded_docs"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_docs")
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
+
+
+@router.get("", response_model=list[DocumentOut])
+def list_documents(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all documents uploaded by the current user."""
+    return db.query(Document).filter(
+        Document.uploaded_by == current_user.id
+    ).order_by(Document.uploaded_at.desc()).all()
+
 
 @router.post("/upload", response_model=DocumentOut)
 def upload_document(
@@ -20,6 +33,7 @@ def upload_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """Upload, extract, chunk, and embed a PDF or DOCX file."""
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are allowed")
@@ -48,7 +62,28 @@ def upload_document(
             source_filename=file.filename,
             document_id=doc.id,
         )
+        print(f"[CampusMind] Document #{doc.id} ({file.filename}) processed into {num_chunks} chunks.")
     except Exception as e:
+        print(f"[CampusMind Error] Document processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
     return doc
+
+
+@router.delete("/{document_id}")
+def delete_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Delete a document record."""
+    doc = db.query(Document).filter(
+        Document.id == document_id,
+        Document.uploaded_by == current_user.id
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    db.delete(doc)
+    db.commit()
+    return {"status": "success", "message": "Document deleted successfully"}
