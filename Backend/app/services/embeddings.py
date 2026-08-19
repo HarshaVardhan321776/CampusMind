@@ -6,8 +6,9 @@ from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CHROMA_DIR = os.path.join(BASE_DIR, "chroma_db")
+from app.core.config import settings
+
+CHROMA_DIR = settings.CHROMA_DIR
 COLLECTION_NAME = "campusmind_docs"
 
 embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")

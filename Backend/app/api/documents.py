@@ -9,10 +9,11 @@ from app.models.document import Document
 from app.schemas.document import DocumentOut
 from app.services.embeddings import process_document
 
+from app.core.config import settings
+
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploaded_docs")
+UPLOAD_DIR = settings.UPLOAD_DIR
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 
 
