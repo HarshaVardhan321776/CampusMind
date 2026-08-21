@@ -10,8 +10,19 @@ from app.core.config import settings
 
 CHROMA_DIR = settings.CHROMA_DIR
 COLLECTION_NAME = "campusmind_docs"
+_embedding_function = None
 
-embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+
+def get_embedding_function():
+    global _embedding_function
+
+    if _embedding_function is None:
+        print("[CampusMind] Loading embedding model...")
+        _embedding_function = SentenceTransformerEmbeddings(
+            model_name="all-MiniLM-L6-v2"
+        )
+
+    return _embedding_function
 
 # Initialize OCR Engine for scanned/handwritten documents
 _ocr_engine = None
@@ -211,7 +222,7 @@ def embed_and_store(
 
     vectorstore = Chroma(
         collection_name=COLLECTION_NAME,
-        embedding_function=embedding_function,
+        embedding_function=get_embedding_function(),
         persist_directory=CHROMA_DIR,
     )
 
