@@ -1,8 +1,10 @@
 import os
 import numpy as np
+import hashlib
+import math
+
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import SentenceTransformerEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
@@ -10,6 +12,42 @@ from app.core.config import settings
 
 CHROMA_DIR = settings.CHROMA_DIR
 COLLECTION_NAME = "campusmind_docs"
+# Chroma uses its lightweight built-in embedding model.
+# We intentionally avoid SentenceTransformer/PyTorch because Render's
+# free 512 MB instance cannot reliably run that stack.
+
+class LightweightEmbeddings:
+    def __init__(self, dimensions=256):
+        self.dimensions = dimensions
+
+    def _embed(self, text: str):
+        vector = [0.0] * self.dimensions
+
+        for word in text.lower().split():
+            digest = hashlib.md5(word.encode("utf-8")).digest()
+            index = int.from_bytes(digest[:4], "big") % self.dimensions
+            sign = 1.0 if digest[4] % 2 == 0 else -1.0
+            vector[index] += sign
+
+        magnitude = math.sqrt(
+            sum(value * value for value in vector)
+        )
+
+        if magnitude > 0:
+            vector = [
+                value / magnitude
+                for value in vector
+            ]
+
+        return vector
+
+    def embed_documents(self, texts):
+        return [self._embed(text) for text in texts]
+
+    def embed_query(self, text):
+        return self._embed(text)
+
+
 _embedding_function = None
 
 
@@ -17,9 +55,9 @@ def get_embedding_function():
     global _embedding_function
 
     if _embedding_function is None:
-        print("[CampusMind] Loading embedding model...")
-        _embedding_function = SentenceTransformerEmbeddings(
-            model_name="all-MiniLM-L6-v2"
+        print("[CampusMind] Loading lightweight embedding function...")
+        _embedding_function = LightweightEmbeddings(
+            dimensions=256
         )
 
     return _embedding_function
