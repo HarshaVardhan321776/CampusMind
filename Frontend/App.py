@@ -1049,24 +1049,18 @@ def render_documents():
             st.info(f"Selected: **{uploaded_file.name}** ({file_kb} KB)")
             
             if st.button("🚀 Process & Ingest File", use_container_width=True):
-                progress_container = st.empty()
-                with progress_container.container():
-                    st.write("⏳ Step 1/3: Uploading document to server...")
+                with st.spinner(f"⚡ Processing and indexing {uploaded_file.name}..."):
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
                     ok, res = api_call("POST", "/documents/upload", files=files, require_auth=True)
                     
                     if ok:
-                        st.write("🧠 Step 2/3: Extracting text & OCR indexing...")
-                        time.sleep(0.3)
-                        st.write("✅ Step 3/3: Vector embeddings generated and persisted!")
                         doc_id = res.get("id")
                         filename = res.get("filename")
-                        st.success(f"Successfully processed **{filename}** (ID #{doc_id}) into knowledge base!")
+                        st.success(f"✅ Successfully indexed **{filename}** (ID #{doc_id}) into knowledge base!")
                         refresh_documents()
-                        time.sleep(0.5)
                         st.rerun()
                     else:
-                        st.error(f"Upload failed: {res.get('error', 'Internal processing error')}")
+                        st.error(f"❌ Upload failed: {res.get('error', 'Internal processing error')}")
                         
         st.markdown('</div>', unsafe_allow_html=True)
 

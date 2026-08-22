@@ -1,4 +1,5 @@
 import os
+import shutil
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 
@@ -42,8 +43,8 @@ def upload_document(
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     file_path = os.path.join(UPLOAD_DIR, file.filename)
 
-    with open(file_path, "wb") as f:
-        f.write(file.file.read())
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer, length=1024 * 1024)
 
     file_type = ext.replace(".", "")
 
