@@ -136,11 +136,12 @@ def load_document(file_path: str, file_type: str) -> list[Document]:
         raise ValueError(f"Unsupported file type: {file_type}")
 
 
-def chunk_documents(documents: list[Document], chunk_size: int = 800, chunk_overlap: int = 120):
-    """Split loaded documents into smaller overlapping chunks."""
+def chunk_documents(documents: list[Document], chunk_size: int = 1200, chunk_overlap: int = 250):
+    """Split loaded documents into contextual chunks preserving code blocks, tables, and definitions."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
+        separators=["\n\n", "\n", ". ", " ", ""],
     )
     return splitter.split_documents(documents)
 

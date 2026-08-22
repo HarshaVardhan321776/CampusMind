@@ -49,24 +49,49 @@ def answer_question(
     elif document_id is not None:
         where_filter = {"document_id": int(document_id)}
 
-    # Retrieve top relevant context chunks with filtering
-    results = []
+    # Retrieve candidate chunks with similarity scores
+    scored_results = []
     try:
         if where_filter:
-            results = vectorstore.similarity_search(question, k=6, filter=where_filter)
+            scored_results = vectorstore.similarity_search_with_score(question, k=12, filter=where_filter)
         else:
-            results = vectorstore.similarity_search(question, k=6)
+            scored_results = vectorstore.similarity_search_with_score(question, k=12)
     except Exception as e:
         print(f"[RAG Vector Search Error]: {e}")
         try:
-            results = vectorstore.similarity_search(question, k=6)
+            scored_results = vectorstore.similarity_search_with_score(question, k=12)
         except Exception:
-            results = []
+            scored_results = []
+
+    # Semantic relevance filtering and cross-document noise suppression
+    filtered_docs = []
+    if scored_results:
+        min_score = min(s for d, s in scored_results)
+        
+        # Calculate best score per document to isolate matching subject matter
+        doc_best_scores = {}
+        for doc, score in scored_results:
+            src = doc.metadata.get("source") or doc.metadata.get("document_name") or "doc"
+            if src not in doc_best_scores or score < doc_best_scores[src]:
+                doc_best_scores[src] = score
+
+        # Keep documents whose best chunk is closely aligned with top match (eliminates unrelated topic bleed)
+        valid_doc_sources = {
+            src for src, best_s in doc_best_scores.items()
+            if best_s <= max(1.08, min_score + 0.28)
+        }
+
+        for doc, score in scored_results:
+            src = doc.metadata.get("source") or doc.metadata.get("document_name") or "doc"
+            if src in valid_doc_sources and score <= max(1.12, min_score + 0.32):
+                filtered_docs.append(doc)
+                if len(filtered_docs) >= 6:
+                    break
 
     context_blocks = []
     sources = []
-    if results:
-        for i, doc in enumerate(results):
+    if filtered_docs:
+        for i, doc in enumerate(filtered_docs):
             source_name = doc.metadata.get("source") or doc.metadata.get("document_name") or "Document"
             page_num = doc.metadata.get("page")
             page_info = f" (Page {page_num})" if page_num else ""
@@ -78,14 +103,14 @@ def answer_question(
     context_text = "\n\n".join(context_blocks) if context_blocks else "No relevant document excerpts found."
 
     system_prompt = (
-        "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant. "
-        "Your mission is to help students learn effectively, understand concepts clearly, solve problems, and master their course material.\n\n"
-        "Guidelines for Your Responses:\n"
-        "1. Document Grounding: When document excerpts are provided, prioritize and ground your explanations directly in those materials, citing the specific source names and page numbers where available.\n"
-        "2. Comprehensive & Pedagogical: Provide thorough, structured, and easy-to-understand explanations using bullet points, numbered steps, comparison tables, or clear code blocks.\n"
-        "3. OCR Interpretation: If handwritten or scanned note excerpts contain OCR distortions or typos (e.g. 'Obera tets in?y Hhon'), intelligently reconstruct the intended academic meaning (e.g. 'Operators in Python') and explain it correctly.\n"
-        "4. General & Conversational Queries: If the student asks a greeting (like 'Hi', 'Hello'), introduce yourself warmly as CampusMind. If they ask a general academic or programming question not covered in the excerpts, provide a high-quality, complete academic answer and guide them to upload relevant notes in the Knowledge Base for syllabus-tailored assistance.\n"
-        "5. Tone: Professional, supportive, and academically rigorous."
+        "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant.\n\n"
+        "Core Directives:\n"
+        "1. Complete Academic Answers: ALWAYS provide a complete, clear, and comprehensive answer to the student's question. NEVER say 'content is not available', 'not mentioned in the text', or refuse to answer. Explain concepts thoroughly with structured explanations, code examples, formulas, or step-by-step breakdowns.\n"
+        "2. Ground in Document Context: When relevant document excerpts are provided, integrate their specific definitions, examples, and rules into your explanation, and reference the source names (and page numbers if available).\n"
+        "3. Cross-Document Isolation: Focus strictly on the subject matter of the student's question. Do NOT bring up unrelated topics from other documents (e.g. never mix Git commands into Python programming questions, or vice versa).\n"
+        "4. Handwritten & OCR Notes: If excerpts contain OCR artifacts from handwritten notes (e.g. 'Obera tets in?y Hhon'), reconstruct and explain the intended academic concept ('Operators in Python') with perfect accuracy.\n"
+        "5. General Inquiries & Greetings: If the student sends a greeting ('Hi', 'Hello') or asks a general CS/academic question without document matches, provide a warm, helpful response and solve their query completely.\n"
+        "6. Formatting: Use crisp markdown with headings, bullet points, comparison tables, and syntax-highlighted code blocks."
     )
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -107,7 +132,7 @@ def answer_question(
                 model=model_name,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=1024,
+                max_tokens=1200,
                 timeout=12.0
             )
             raw_answer = completion.choices[0].message.content
