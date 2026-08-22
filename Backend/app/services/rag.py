@@ -78,14 +78,20 @@ def retrieve_hybrid_context(
     query_terms = [t for t in raw_tokens if t not in STOPWORDS and len(t) > 1]
     normalized_q = " ".join(query_terms)
 
-    # Aggregate & transcript query keywords requiring complete document context
-    AGGREGATE_TERMS = {
-        "cgpa", "sgpa", "gpa", "grade", "grades", "mark", "marks", "marksheet",
-        "transcript", "credit", "credits", "semester", "sem", "calculate",
+    # Domain routing keywords
+    GRADE_TERMS = {
+        "cgpa", "sgpa", "spa", "gpa", "grade", "grades", "mark", "marks", "marksheet",
+        "transcript", "credit", "credits", "semester", "sem", "semesters", "calculate",
         "summary", "breakdown", "all courses", "all subjects", "percentage",
-        "performance", "exam", "result", "results"
+        "performance", "exam", "result", "results", "passed", "failed", "srm"
     }
-    is_aggregate_query = any(t in query_terms for t in AGGREGATE_TERMS)
+    PYTHON_TERMS = {"python", "pip", "django", "flask", "numpy", "pandas", "def", "class", "list", "dict", "tuple", "lambda"}
+    GIT_TERMS = {"git", "github", "branch", "commit", "checkout", "merge", "stash", "rebase", "repo", "pull", "push"}
+
+    is_grade_query = any(t in query_terms for t in GRADE_TERMS)
+    is_py_query = any(t in query_terms for t in PYTHON_TERMS)
+    is_git_query = any(t in query_terms for t in GIT_TERMS)
+    is_aggregate_query = is_grade_query
 
     # 1. Fetch user chunks directly from ChromaDB
     try:
@@ -157,16 +163,34 @@ def retrieve_hybrid_context(
         else:
             s_doc = 0.0
 
-        # Grade Sheet & Transcript affinity boost
-        if is_aggregate_query and ("grade" in src_lower or "mark" in src_lower or "exam" in text_lower or "cgpa" in text_lower or "semester" in text_lower):
-            s_doc += 0.45
+        # Domain routing affinity scoring
+        is_grade_doc = any(k in src_lower for k in ["grade", "mark", "transcript", "result", "exam"]) or ("cgpa" in text_lower or "exam mark details" in text_lower)
+        is_py_doc = "python" in src_lower
+        is_git_doc = "git" in src_lower
+
+        domain_boost = 0.0
+        if is_grade_query:
+            if is_grade_doc:
+                domain_boost = 1.5
+            else:
+                domain_boost = -0.5
+        elif is_py_query:
+            if is_py_doc:
+                domain_boost = 1.0
+            elif is_grade_doc:
+                domain_boost = -0.5
+        elif is_git_query:
+            if is_git_doc:
+                domain_boost = 1.0
+            elif is_grade_doc:
+                domain_boost = -0.5
 
         # Vector score
         key = f"{src_name}_{str(page_num)}_{text[:50]}"
         s_vec = vector_scores.get(key, 0.0)
 
         # Composite score
-        total_score = (0.45 * s_lex) + (0.30 * s_exact) + (0.15 * s_doc) + (0.10 * s_vec)
+        total_score = (0.40 * s_lex) + (0.30 * s_exact) + (0.20 * s_doc) + (0.10 * s_vec) + domain_boost
 
         if total_score > 0.05:
             scored_candidates.append({
