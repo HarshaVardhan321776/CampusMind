@@ -37,7 +37,12 @@ def ask_question(
         Message.conversation_id == conversation.id
     ).order_by(Message.created_at).all()
 
-    chat_history = [{"role": m.role, "content": m.content} for m in previous_messages]
+    chat_history = []
+    for m in previous_messages[-6:]:
+        content = m.content or ""
+        if len(content) > 600:
+            content = content[:600] + "..."
+        chat_history.append({"role": m.role, "content": content})
 
     result = answer_question(
         question=request.question,

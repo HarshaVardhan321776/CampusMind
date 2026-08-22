@@ -281,8 +281,8 @@ def answer_question(
             "Grade Sheets & Transcripts:\n"
             "1. Direct Response Only: Begin immediately with the markdown tables. Do NOT output planning monologues (e.g. 'I will format this cleanly').\n"
             "2. Official CGPA First: State the official printed CGPA immediately at the top in bold (e.g. '**Your CGPA: 7.77**').\n"
-            "3. Summary Table: Provide a clean, compact Semester-wise SGPA summary table.\n"
-            "4. Detailed Course Breakdown: Show each semester with exact subject codes, course titles, credits, grades, and grade points from the document.\n\n"
+            "3. Summary Table: Provide a compact Semester-wise SGPA summary table.\n"
+            "4. Concise Course Breakdown: Show each semester in a clean table with columns: Code | Subject Title | Credits | Grade | Points.\n\n"
             "Study Notes & Technical Concepts:\n"
             "1. Plain-English Explanation: Explain the concept in 2-3 clear, simple sentences.\n"
             "2. Clean Code / Example: Provide a short, practical code snippet with comments if relevant.\n"
@@ -320,8 +320,8 @@ def answer_question(
                 model=model_name,
                 messages=messages,
                 temperature=0.1,
-                max_tokens=3500,
-                timeout=30.0
+                max_tokens=4096,
+                timeout=35.0
             )
             raw_answer = completion.choices[0].message.content
             if raw_answer:
