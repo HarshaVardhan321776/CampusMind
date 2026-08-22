@@ -7,11 +7,11 @@ from app.services.embeddings import embedding_function, CHROMA_DIR, COLLECTION_N
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
-# Primary & Fallback Groq models available
+# Primary & Fallback Groq models available (fast & verified)
 GROQ_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "groq/compound",
+    "openai/gpt-oss-safeguard-20b",
     "qwen/qwen3.6-27b"
 ]
 
@@ -28,7 +28,6 @@ def clean_model_output(text: str) -> str:
     """Strip internal reasoning tags e.g. <think>...</think> from models like Qwen."""
     if not text:
         return ""
-    # Remove <think>...</think> tags and their contents
     cleaned = re.sub(r"<think>[\s\S]*?<\/think>", "", text).strip()
     return cleaned
 
@@ -64,42 +63,34 @@ def answer_question(
         except Exception:
             results = []
 
-    if not results:
-        target_doc_msg = " in the selected document" if document_id else ""
-        return {
-            "answer": f"I couldn't find anything relevant{target_doc_msg} to answer your question. Please ensure the relevant document is uploaded in your Knowledge Base.",
-            "sources": [],
-        }
-
     context_blocks = []
     sources = []
-    for i, doc in enumerate(results):
-        source_name = doc.metadata.get("source") or doc.metadata.get("document_name") or "Document"
-        page_num = doc.metadata.get("page")
-        page_info = f" (Page {page_num})" if page_num else ""
+    if results:
+        for i, doc in enumerate(results):
+            source_name = doc.metadata.get("source") or doc.metadata.get("document_name") or "Document"
+            page_num = doc.metadata.get("page")
+            page_info = f" (Page {page_num})" if page_num else ""
 
-        context_blocks.append(f"[Excerpt {i+1} from {source_name}{page_info}]\n{doc.page_content.strip()}")
-        if source_name not in sources:
-            sources.append(source_name)
+            context_blocks.append(f"[Excerpt {i+1} from {source_name}{page_info}]\n{doc.page_content.strip()}")
+            if source_name not in sources:
+                sources.append(source_name)
 
-    context_text = "\n\n".join(context_blocks)
+    context_text = "\n\n".join(context_blocks) if context_blocks else "No relevant document excerpts found."
 
     system_prompt = (
         "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant. "
-        "Your task is to answer the student's question accurately, thoroughly, and helpfully using the provided document excerpts. "
-        "Guidelines:\n"
-        "1. Ground your explanation clearly in the provided excerpts.\n"
-        "2. Provide structured, readable explanations using bullet points, numbered steps, or markdown code blocks where appropriate.\n"
-        "3. If the excerpts cover the topic (e.g. operators, variables, policies, formulas), provide a comprehensive and easy-to-understand explanation based on the material.\n"
-        "4. If the excerpt text contains slight OCR typos from handwritten/scanned notes, interpret the intended academic meaning accurately.\n"
-        "5. If the provided excerpts genuinely contain zero relevant information about the question, politely explain what topics were found in the document and that the specific query was not found in the current excerpts.\n"
-        "6. Mention which source document(s) you consulted."
+        "Your mission is to help students learn effectively, understand concepts clearly, solve problems, and master their course material.\n\n"
+        "Guidelines for Your Responses:\n"
+        "1. Document Grounding: When document excerpts are provided, prioritize and ground your explanations directly in those materials, citing the specific source names and page numbers where available.\n"
+        "2. Comprehensive & Pedagogical: Provide thorough, structured, and easy-to-understand explanations using bullet points, numbered steps, comparison tables, or clear code blocks.\n"
+        "3. OCR Interpretation: If handwritten or scanned note excerpts contain OCR distortions or typos (e.g. 'Obera tets in?y Hhon'), intelligently reconstruct the intended academic meaning (e.g. 'Operators in Python') and explain it correctly.\n"
+        "4. General & Conversational Queries: If the student asks a greeting (like 'Hi', 'Hello'), introduce yourself warmly as CampusMind. If they ask a general academic or programming question not covered in the excerpts, provide a high-quality, complete academic answer and guide them to upload relevant notes in the Knowledge Base for syllabus-tailored assistance.\n"
+        "5. Tone: Professional, supportive, and academically rigorous."
     )
 
     messages = [{"role": "system", "content": system_prompt}]
 
     if chat_history:
-        # Keep last 6 messages to preserve context without exceeding token limits
         messages.extend(chat_history[-6:])
 
     messages.append({
@@ -117,6 +108,7 @@ def answer_question(
                 messages=messages,
                 temperature=0.2,
                 max_tokens=1024,
+                timeout=12.0
             )
             raw_answer = completion.choices[0].message.content
             if raw_answer:

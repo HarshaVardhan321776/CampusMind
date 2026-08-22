@@ -22,7 +22,8 @@ if "backend_url" not in st.session_state:
 if "theme" not in st.session_state:
     st.session_state.theme = "dark"
 if "token" not in st.session_state:
-    st.session_state.token = None
+    stored_token = st.query_params.get("token")
+    st.session_state.token = stored_token if (stored_token and len(stored_token) > 10) else None
 if "user" not in st.session_state:
     st.session_state.user = None
 if "current_conversation_id" not in st.session_state:
@@ -545,6 +546,8 @@ def api_call(method, endpoint, json_body=None, files=None, require_auth=True):
         elif resp.status_code == 401:
             st.session_state.token = None
             st.session_state.user = None
+            if "token" in st.query_params:
+                del st.query_params["token"]
             return False, {"error": "Your session has expired. Please sign in again."}
         else:
             try:
@@ -677,6 +680,7 @@ def render_auth():
                             ok, res = api_call("POST", "/auth/login", json_body={"email": login_email.strip(), "password": login_pwd}, require_auth=False)
                             if ok and "access_token" in res:
                                 st.session_state.token = res["access_token"]
+                                st.query_params["token"] = res["access_token"]
                                 sync_user_profile()
                                 if not st.session_state.user:
                                     st.session_state.user = res.get("user") or {"email": login_email, "name": login_email.split("@")[0].title()}
@@ -713,6 +717,7 @@ def render_auth():
                                 ok_l, res_l = api_call("POST", "/auth/login", json_body={"email": reg_email.strip(), "password": reg_pwd}, require_auth=False)
                                 if ok_l and "access_token" in res_l:
                                     st.session_state.token = res_l["access_token"]
+                                    st.query_params["token"] = res_l["access_token"]
                                     st.session_state.user = {"name": reg_name, "email": reg_email}
                                     refresh_conversations()
                                     refresh_documents()
@@ -740,6 +745,7 @@ def render_auth():
                     
                     if ok and "access_token" in res:
                         st.session_state.token = res["access_token"]
+                        st.query_params["token"] = res["access_token"]
                         st.session_state.user = {"name": demo_name, "email": demo_email}
                         refresh_conversations()
                         refresh_documents()
@@ -851,6 +857,7 @@ def render_sidebar():
                 st.session_state.user = None
                 st.session_state.messages = []
                 st.session_state.current_conversation_id = None
+                st.query_params.clear()
                 st.rerun()
 
 
@@ -1169,6 +1176,17 @@ def render_settings():
 # 9. MAIN CONTROLLER
 # ==============================================================================
 def main():
+    # Auto-hydrate session if token exists in query_params but user profile not loaded
+    if st.session_state.token and not st.session_state.user:
+        ok = sync_user_profile()
+        if not ok:
+            st.session_state.token = None
+            if "token" in st.query_params:
+                del st.query_params["token"]
+        else:
+            refresh_conversations()
+            refresh_documents()
+
     if not st.session_state.token:
         render_auth()
     else:
