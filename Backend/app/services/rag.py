@@ -8,12 +8,13 @@ from app.services.embeddings import get_embedding_function, CHROMA_DIR, COLLECTI
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
-# Primary & Fallback Groq models available (fast & verified)
+# Primary & Fallback Groq models available (fast & high quota)
 GROQ_MODELS = [
-    "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "openai/gpt-oss-safeguard-20b",
-    "qwen/qwen3.6-27b"
+    "qwen/qwen3.6-27b",
+    "groq/compound-mini",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-safeguard-20b"
 ]
 
 STOPWORDS = {
@@ -121,9 +122,15 @@ def retrieve_hybrid_context(
         src_lower = src_name.lower()
         page_num = meta.get("page")
 
-        # Lexical term overlap
+        # Lexical term overlap using whole-word boundary and stem matching
         if query_terms:
-            matched_terms = [t for t in query_terms if t in text_lower]
+            matched_terms = []
+            for t in query_terms:
+                stem = t.rstrip("s") if len(t) > 3 else t
+                pattern = r"\b" + re.escape(stem) + r"\w*\b"
+                if re.search(pattern, text_lower):
+                    matched_terms.append(t)
+
             if len(query_terms) >= 3 and len(matched_terms) == 1:
                 s_lex = (len(matched_terms) / len(query_terms)) * 0.4
             else:
@@ -188,40 +195,52 @@ def retrieve_hybrid_context(
     # Minimum relevance threshold
     RELEVANCE_THRESHOLD = 0.18
 
-    # Strictly keep only documents closely aligned with top match (top_score * 0.70)
-    # This prevents Python/Git documents from bleeding into Grade Sheet queries and vice versa.
-    valid_sources = {
-        src for src, best_s in best_per_doc.items()
-        if best_s >= RELEVANCE_THRESHOLD and best_s >= (top_score * 0.70)
-    }
-
-    if not valid_sources or top_score < RELEVANCE_THRESHOLD:
+    if not best_per_doc or top_score < RELEVANCE_THRESHOLD:
         return [], []
 
-    accepted_chunks = []
-    accepted_sources = list(valid_sources)
+    # Sort documents strictly by hybrid score descending
+    sorted_doc_tuples = sorted(best_per_doc.items(), key=lambda x: x[1], reverse=True)
+    top_doc_score = sorted_doc_tuples[0][1]
 
-    # For aggregate queries (e.g. Grade Sheet / Transcript analysis) or short documents,
-    # supply all pages in chronological order up to 8 chunks to prevent token overflow.
+    # Keep only the top-matching document(s) (>= 80% of top document score)
+    primary_sources = [
+        src for src, s in sorted_doc_tuples
+        if s >= RELEVANCE_THRESHOLD and s >= (top_doc_score * 0.80)
+    ]
+
+    accepted_chunks = []
+    accepted_sources = []
+
+    # For aggregate queries or short documents, extract pages for the top document first in page order
     if is_aggregate_query or len(doc_texts) <= 8:
-        for text, meta in zip(doc_texts, doc_metas):
-            src = meta.get("source") or meta.get("document_name") or "Document"
-            if src in valid_sources:
-                accepted_chunks.append({
-                    "score": 1.0,
-                    "text": text,
-                    "source": src,
-                    "page": meta.get("page", 1),
-                    "metadata": meta,
-                })
+        for target_src in primary_sources:
+            doc_chunks = []
+            for text, meta in zip(doc_texts, doc_metas):
+                src = meta.get("source") or meta.get("document_name") or "Document"
+                if src == target_src:
+                    doc_chunks.append({
+                        "score": best_per_doc[src],
+                        "text": text,
+                        "source": src,
+                        "page": meta.get("page", 1),
+                        "metadata": meta,
+                    })
+            # Sort chronologically by page number
+            doc_chunks.sort(key=lambda x: int(x.get("page") or 1))
+            for chk in doc_chunks:
+                accepted_chunks.append(chk)
+                if target_src not in accepted_sources:
+                    accepted_sources.append(target_src)
                 if len(accepted_chunks) >= 8:
                     break
-        # Sort chronologically by page number
-        accepted_chunks.sort(key=lambda x: int(x.get("page") or 1))
+            if len(accepted_chunks) >= 8:
+                break
     else:
         for c in scored_candidates:
-            if c["source"] in valid_sources and c["score"] >= RELEVANCE_THRESHOLD:
+            if c["source"] in primary_sources and c["score"] >= RELEVANCE_THRESHOLD:
                 accepted_chunks.append(c)
+                if c["source"] not in accepted_sources:
+                    accepted_sources.append(c["source"])
                 if len(accepted_chunks) >= 6:
                     break
 
@@ -296,8 +315,8 @@ def answer_question(
                 model=model_name,
                 messages=messages,
                 temperature=0.2,
-                max_tokens=1200,
-                timeout=12.0
+                max_tokens=2500,
+                timeout=25.0
             )
             raw_answer = completion.choices[0].message.content
             if raw_answer:
