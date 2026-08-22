@@ -8,12 +8,12 @@ from app.services.embeddings import get_embedding_function, CHROMA_DIR, COLLECTI
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
-# Primary & Fallback Groq models available (fast & high quota)
+# Primary & Fallback Groq models available (fast & large context capacity)
 GROQ_MODELS = [
+    "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.6-27b",
     "groq/compound-mini",
-    "openai/gpt-oss-120b",
     "openai/gpt-oss-safeguard-20b"
 ]
 
@@ -323,7 +323,14 @@ def answer_question(
                 max_tokens=4096,
                 timeout=35.0
             )
-            raw_answer = completion.choices[0].message.content
+            choice = completion.choices[0]
+            raw_answer = choice.message.content
+
+            # Never accept an answer cut off in the middle by length
+            if choice.finish_reason == "length":
+                print(f"[Model Cutoff Warning]: {model_name} hit max token limit. Falling back to next model...")
+                continue
+
             if raw_answer:
                 answer = clean_model_output(raw_answer)
                 if answer:
