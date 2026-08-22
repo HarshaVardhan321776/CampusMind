@@ -25,7 +25,8 @@ STOPWORDS = {
     "where", "why", "all", "any", "both", "each", "few", "more", "most", "other", "some",
     "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
     "tell", "me", "explain", "describe", "write", "give", "example", "examples", "please",
-    "i", "my", "we", "our", "you", "your", "they", "their", "it", "its", "this", "that"
+    "i", "my", "we", "our", "you", "your", "they", "their", "it", "its", "this", "that",
+    "matter", "find", "show", "use", "using", "used", "make", "get", "need", "know", "see"
 }
 
 
@@ -114,7 +115,10 @@ def retrieve_hybrid_context(
         # Lexical term overlap
         if query_terms:
             matched_terms = [t for t in query_terms if t in text_lower]
-            s_lex = len(matched_terms) / len(query_terms)
+            if len(query_terms) >= 3 and len(matched_terms) == 1:
+                s_lex = (len(matched_terms) / len(query_terms)) * 0.4
+            else:
+                s_lex = len(matched_terms) / len(query_terms)
         else:
             s_lex = 0.0
 
@@ -169,29 +173,51 @@ def retrieve_hybrid_context(
         if src not in best_per_doc or c["score"] > best_per_doc[src]:
             best_per_doc[src] = c["score"]
 
-    # Minimum relevance threshold (documented threshold: 0.16)
+    # Minimum relevance threshold
     RELEVANCE_THRESHOLD = 0.16
 
-    # If top score is below threshold, no document is sufficiently relevant
-    if top_score < RELEVANCE_THRESHOLD:
-        return [], []
-
-    # Keep documents matching top domain score (eliminates unrelated topic bleed)
+    # For a document to be valid, it must have keyword overlap or strong semantic alignment
     valid_sources = {
         src for src, best_s in best_per_doc.items()
         if best_s >= RELEVANCE_THRESHOLD and best_s >= (top_score * 0.45)
     }
 
-    accepted_chunks = []
-    accepted_sources = []
+    if not valid_sources or top_score < RELEVANCE_THRESHOLD:
+        return [], []
 
-    for c in scored_candidates:
-        if c["source"] in valid_sources and c["score"] >= RELEVANCE_THRESHOLD:
-            accepted_chunks.append(c)
-            if c["source"] not in accepted_sources:
-                accepted_sources.append(c["source"])
-            if len(accepted_chunks) >= 5:
-                break
+    # Aggregate & transcript query keywords requiring complete document context
+    AGGREGATE_TERMS = {
+        "cgpa", "sgpa", "gpa", "grade", "grades", "mark", "marks", "marksheet",
+        "transcript", "credit", "credits", "semester", "sem", "calculate",
+        "summary", "breakdown", "all courses", "all subjects", "percentage",
+        "performance", "exam", "result", "results"
+    }
+    is_aggregate_query = any(t in query_terms for t in AGGREGATE_TERMS)
+
+    accepted_chunks = []
+    accepted_sources = list(valid_sources)
+
+    # For aggregate queries (e.g. Grade Sheet / Transcript analysis) or short documents,
+    # supply all pages in chronological order to prevent data loss or course omission.
+    if is_aggregate_query or len(doc_texts) <= 10:
+        for text, meta in zip(doc_texts, doc_metas):
+            src = meta.get("source") or meta.get("document_name") or "Document"
+            if src in valid_sources:
+                accepted_chunks.append({
+                    "score": 1.0,
+                    "text": text,
+                    "source": src,
+                    "page": meta.get("page", 1),
+                    "metadata": meta,
+                })
+        # Sort chronologically by page number
+        accepted_chunks.sort(key=lambda x: int(x.get("page") or 1))
+    else:
+        for c in scored_candidates:
+            if c["source"] in valid_sources and c["score"] >= RELEVANCE_THRESHOLD:
+                accepted_chunks.append(c)
+                if len(accepted_chunks) >= 5:
+                    break
 
     return accepted_chunks, accepted_sources
 
@@ -219,13 +245,18 @@ def answer_question(
     if context_blocks:
         context_text = "\n\n".join(context_blocks)
         system_prompt = (
-            "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant.\n\n"
+            "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and university transcript / study materials analyst.\n\n"
             "Core Directives:\n"
             "1. Grounded Academic Answers: Thoroughly and clearly answer the student's question, integrating the specific definitions, formulas, rules, and code snippets from the provided document excerpts.\n"
-            "2. Source Transparency: Reference the specific source document names (and page numbers where available) in your response.\n"
-            "3. Comprehensive Explanations: Provide well-structured explanations using markdown headings, bullet points, numbered steps, comparison tables, or syntax-highlighted code blocks.\n"
-            "4. Handwritten & OCR Notes: If excerpts contain OCR artifacts from handwritten/scanned notes, interpret the intended academic meaning accurately.\n"
-            "5. Strict Relevance: Focus on the student's question and relevant excerpts. Do not bring in unrelated topics from other subjects."
+            "2. Grade Sheets & Academic Transcripts:\n"
+            "   - Strictly Verbatim: NEVER invent, guess, substitute, or hallucinate course names, subject codes, credits, or grades. Every single course MUST come strictly and verbatim from the provided document excerpts.\n"
+            "   - Exact Chronology: Present semesters in exact chronological order with their printed dates (e.g. Sem 1 DEC 2023, Sem 2 MAY 2024, Sem 3 DEC 2024, Sem 4 MAY 2025, Sem 5 DEC 2025, Sem 6 MAY 2026).\n"
+            "   - SGPA Calculation: For each semester, calculate: Total Credits = sum(Credits), Total Grade Points = sum(Credit * Grade Point), and SGPA = Total Points / Total Credits. (Exclude non-credit courses marked '-' or 0 credits from the credit sum).\n"
+            "   - Official CGPA: Display the official CGPA printed on the transcript prominently.\n"
+            "3. Source Transparency: Reference the specific source document names (and page numbers where available) in your response.\n"
+            "4. Comprehensive Explanations: Provide well-structured explanations using markdown headings, bullet points, numbered steps, comparison tables, or syntax-highlighted code blocks.\n"
+            "5. Handwritten & OCR Notes: If excerpts contain OCR artifacts from handwritten/scanned notes, interpret the intended academic meaning accurately.\n"
+            "6. Strict Relevance: Focus on the student's question and relevant excerpts. Do not bring in unrelated topics from other subjects."
         )
         user_content = f"Document Excerpts:\n{context_text}\n\nStudent Question: {question}"
     else:
