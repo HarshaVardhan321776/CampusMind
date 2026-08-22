@@ -16,14 +16,31 @@ st.set_page_config(
 
 DEFAULT_API_URL = os.environ.get("CAMPUSMIND_API_URL", "http://127.0.0.1:8000")
 
+
+def strip_auth_token_from_url() -> bool:
+    """Remove JWT from the URL. Shared links must never auto-sign someone in."""
+    if "token" in st.query_params:
+        del st.query_params["token"]
+        return True
+    return False
+
+
 # Session State Setup
 if "backend_url" not in st.session_state:
     st.session_state.backend_url = DEFAULT_API_URL
 if "theme" not in st.session_state:
     st.session_state.theme = "dark"
+if "auth_notice" not in st.session_state:
+    st.session_state.auth_notice = None
 if "token" not in st.session_state:
-    stored_token = st.query_params.get("token")
-    st.session_state.token = stored_token if (stored_token and len(stored_token) > 10) else None
+    st.session_state.token = None
+# Never restore auth from URL — that would let shared links hijack accounts.
+if strip_auth_token_from_url():
+    st.session_state.auth_notice = (
+        "This link included a sign-in token. For your security, please log in with your own account."
+    )
+    st.session_state.token = None
+    st.session_state.user = None
 if "user" not in st.session_state:
     st.session_state.user = None
 if "current_conversation_id" not in st.session_state:
@@ -680,7 +697,7 @@ def render_auth():
                             ok, res = api_call("POST", "/auth/login", json_body={"email": login_email.strip(), "password": login_pwd}, require_auth=False)
                             if ok and "access_token" in res:
                                 st.session_state.token = res["access_token"]
-                                st.query_params["token"] = res["access_token"]
+                                st.query_params.clear()
                                 sync_user_profile()
                                 if not st.session_state.user:
                                     st.session_state.user = res.get("user") or {"email": login_email, "name": login_email.split("@")[0].title()}
@@ -717,7 +734,7 @@ def render_auth():
                                 ok_l, res_l = api_call("POST", "/auth/login", json_body={"email": reg_email.strip(), "password": reg_pwd}, require_auth=False)
                                 if ok_l and "access_token" in res_l:
                                     st.session_state.token = res_l["access_token"]
-                                    st.query_params["token"] = res_l["access_token"]
+                                    st.query_params.clear()
                                     st.session_state.user = {"name": reg_name, "email": reg_email}
                                     refresh_conversations()
                                     refresh_documents()
@@ -745,7 +762,7 @@ def render_auth():
                     
                     if ok and "access_token" in res:
                         st.session_state.token = res["access_token"]
-                        st.query_params["token"] = res["access_token"]
+                        st.query_params.clear()
                         st.session_state.user = {"name": demo_name, "email": demo_email}
                         refresh_conversations()
                         refresh_documents()
