@@ -1,5 +1,6 @@
 import os
 import re
+import hashlib
 import chromadb
 from groq import Groq
 from langchain_community.vectorstores import Chroma
@@ -43,11 +44,30 @@ def clean_model_output(text: str) -> str:
     """Strip internal reasoning tags and planning preambles from model responses."""
     if not text:
         return ""
-    # Strip <think>...</think> tags
-    cleaned = re.sub(r"<think>[\s\S]*?<\/think>", "", text).strip()
+    cleaned = text
+    # Strip common model reasoning/thinking blocks (qwen, groq, etc.)
+    tag = "think"
+    cleaned = re.sub(
+        rf"<(?:{tag}|redacted_thinking|reasoning)>[\s\S]*?</(?:{tag}|redacted_thinking|reasoning)>",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
     # Strip conversational meta-commentary preambles
-    cleaned = re.sub(r"^(?:Sure!?|Certainly!?|Here is|Below is|I will|Let me|I'll format)[^\n]*\n+", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(
+        r"^(?:Sure!?|Certainly!?|Here is|Below is|I will|Let me|I'll format)[^\n]*\n+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
     return cleaned
+
+
+def _chunk_key(source: str, page, text: str) -> str:
+    """Stable lookup key for matching vector hits back to stored chunks."""
+    page_str = str(page) if page is not None else ""
+    text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+    return f"{source}|{page_str}|{text_hash}"
 
 
 def compute_transcript_summary(text: str) -> str:
@@ -170,11 +190,11 @@ def retrieve_hybrid_context(
     vector_scores = {}
     try:
         vectorstore = get_vectorstore()
-        vec_matches = vectorstore.similarity_search_with_score(question, k=min(15, num_chunks), filter=where_filter)
+        vec_matches = vectorstore.similarity_search_with_score(question, k=min(25, num_chunks), filter=where_filter)
         for doc_obj, distance in vec_matches:
             src = doc_obj.metadata.get("source") or doc_obj.metadata.get("document_name") or ""
-            pg = str(doc_obj.metadata.get("page", ""))
-            key = f"{src}_{pg}_{doc_obj.page_content[:50]}"
+            pg = doc_obj.metadata.get("page", "")
+            key = _chunk_key(src, pg, doc_obj.page_content)
             vector_scores[key] = max(0.0, 1.0 - (distance / 2.0))
     except Exception as e:
         print(f"[Vector Search Fallback Warning]: {e}")
@@ -243,7 +263,7 @@ def retrieve_hybrid_context(
                 domain_boost = -0.5
 
         # Vector score
-        key = f"{src_name}_{str(page_num)}_{text[:50]}"
+        key = _chunk_key(src_name, page_num, text)
         s_vec = vector_scores.get(key, 0.0)
 
         # Composite score
@@ -276,10 +296,19 @@ def retrieve_hybrid_context(
         if src not in best_per_doc or c["score"] > best_per_doc[src]:
             best_per_doc[src] = c["score"]
 
-    # Minimum relevance threshold
-    RELEVANCE_THRESHOLD = 0.18
+    # Minimum relevance threshold — soft fallback keeps search from returning nothing
+    RELEVANCE_THRESHOLD = 0.12
+    SOFT_FALLBACK_THRESHOLD = 0.05
 
     if not best_per_doc or top_score < RELEVANCE_THRESHOLD:
+        if scored_candidates and top_score >= SOFT_FALLBACK_THRESHOLD:
+            fallback_chunks = []
+            fallback_sources = []
+            for c in scored_candidates[:6]:
+                fallback_chunks.append(c)
+                if c["source"] not in fallback_sources:
+                    fallback_sources.append(c["source"])
+            return fallback_chunks, fallback_sources
         return [], []
 
     # Sort documents strictly by hybrid score descending
@@ -315,9 +344,9 @@ def retrieve_hybrid_context(
                 accepted_chunks.append(chk)
                 if target_src not in accepted_sources:
                     accepted_sources.append(target_src)
-                if len(accepted_chunks) >= 8:
+                if len(accepted_chunks) >= 12:
                     break
-            if len(accepted_chunks) >= 8:
+            if len(accepted_chunks) >= 12:
                 break
     else:
         for c in scored_candidates:
@@ -325,7 +354,7 @@ def retrieve_hybrid_context(
                 accepted_chunks.append(c)
                 if c["source"] not in accepted_sources:
                     accepted_sources.append(c["source"])
-                if len(accepted_chunks) >= 6:
+                if len(accepted_chunks) >= 10:
                     break
 
     return accepted_chunks, accepted_sources
@@ -391,31 +420,39 @@ def answer_question(
     messages = [{"role": "system", "content": system_prompt}]
 
     if chat_history:
-        messages.extend(chat_history[-6:])
+        messages.extend(chat_history[-8:])
 
     messages.append({
         "role": "user",
         "content": user_content,
     })
 
-    # Call LLM with fallback
+    # Call LLM with fallback — keep best partial answer if all models hit token limit
     answer = None
+    partial_answer = None
     last_error = None
+    max_output_tokens = 8192 if any(
+        t in question.lower() for t in ("cgpa", "sgpa", "semester", "transcript", "grade", "marks", "all")
+    ) else 6144
+
     for model_name in GROQ_MODELS:
         try:
             completion = client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 temperature=0.1,
-                max_tokens=4096,
-                timeout=35.0
+                max_tokens=max_output_tokens,
+                timeout=90.0,
             )
             choice = completion.choices[0]
             raw_answer = choice.message.content
 
-            # Never accept an answer cut off in the middle by length
             if choice.finish_reason == "length":
-                print(f"[Model Cutoff Warning]: {model_name} hit max token limit. Falling back to next model...")
+                print(f"[Model Cutoff Warning]: {model_name} hit max token limit.")
+                if raw_answer:
+                    cleaned = clean_model_output(raw_answer)
+                    if cleaned and (partial_answer is None or len(cleaned) > len(partial_answer)):
+                        partial_answer = cleaned
                 continue
 
             if raw_answer:
@@ -425,6 +462,9 @@ def answer_question(
         except Exception as e:
             print(f"[Groq Model {model_name} Error]: {e}")
             last_error = e
+
+    if not answer and partial_answer:
+        answer = partial_answer + "\n\n---\n*Response was trimmed due to length. Ask a follow-up for more detail on any section.*"
 
     if not answer:
         answer = f"Sorry, I encountered an issue communicating with the AI model: {str(last_error)}"

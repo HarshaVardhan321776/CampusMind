@@ -516,7 +516,7 @@ def check_health():
         return False, "Offline"
 
 
-def api_call(method, endpoint, json_body=None, files=None, require_auth=True):
+def api_call(method, endpoint, json_body=None, files=None, require_auth=True, timeout=None):
     """Unified API client with authentication and error handling."""
     url = f"{st.session_state.backend_url.rstrip('/')}/{endpoint.lstrip('/')}"
     headers = {}
@@ -529,15 +529,15 @@ def api_call(method, endpoint, json_body=None, files=None, require_auth=True):
         
     try:
         if method.upper() == "GET":
-            resp = requests.get(url, headers=headers, timeout=15)
+            resp = requests.get(url, headers=headers, timeout=timeout or 15)
         elif method.upper() == "POST":
             if files:
-                resp = requests.post(url, headers=headers, files=files, timeout=300)
+                resp = requests.post(url, headers=headers, files=files, timeout=timeout or 300)
             else:
                 headers["Content-Type"] = "application/json"
-                resp = requests.post(url, headers=headers, json=json_body, timeout=40)
+                resp = requests.post(url, headers=headers, json=json_body, timeout=timeout or 120)
         elif method.upper() == "DELETE":
-            resp = requests.delete(url, headers=headers, timeout=10)
+            resp = requests.delete(url, headers=headers, timeout=timeout or 10)
         else:
             return False, {"error": f"Method {method} not supported"}
             
@@ -559,7 +559,7 @@ def api_call(method, endpoint, json_body=None, files=None, require_auth=True):
     except requests.exceptions.ConnectionError:
         return False, {"error": f"Could not reach backend at {st.session_state.backend_url}. Please ensure server is running."}
     except requests.exceptions.Timeout:
-        return False, {"error": "Request timed out. Server is busy."}
+        return False, {"error": "Request timed out. The AI is still processing — please try again or ask a shorter question."}
     except Exception as e:
         return False, {"error": str(e)}
 
@@ -984,7 +984,7 @@ def render_chat():
                 if active_doc_id is not None:
                     payload["document_id"] = active_doc_id
 
-                ok, res = api_call("POST", "/chat/ask", json_body=payload, require_auth=True)
+                ok, res = api_call("POST", "/chat/ask", json_body=payload, require_auth=True, timeout=120)
 
                 if ok:
                     ans = res.get("answer", "No answer generated.")

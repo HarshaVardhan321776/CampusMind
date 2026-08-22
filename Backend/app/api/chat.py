@@ -38,10 +38,10 @@ def ask_question(
     ).order_by(Message.created_at).all()
 
     chat_history = []
-    for m in previous_messages[-6:]:
+    for m in previous_messages[-8:]:
         content = m.content or ""
-        if len(content) > 600:
-            content = content[:600] + "..."
+        if len(content) > 1200:
+            content = content[:1200] + "..."
         chat_history.append({"role": m.role, "content": content})
 
     result = answer_question(
