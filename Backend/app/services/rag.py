@@ -74,6 +74,15 @@ def retrieve_hybrid_context(
     query_terms = [t for t in raw_tokens if t not in STOPWORDS and len(t) > 1]
     normalized_q = " ".join(query_terms)
 
+    # Aggregate & transcript query keywords requiring complete document context
+    AGGREGATE_TERMS = {
+        "cgpa", "sgpa", "gpa", "grade", "grades", "mark", "marks", "marksheet",
+        "transcript", "credit", "credits", "semester", "sem", "calculate",
+        "summary", "breakdown", "all courses", "all subjects", "percentage",
+        "performance", "exam", "result", "results"
+    }
+    is_aggregate_query = any(t in query_terms for t in AGGREGATE_TERMS)
+
     # 1. Fetch user chunks directly from ChromaDB
     try:
         chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
@@ -138,12 +147,15 @@ def retrieve_hybrid_context(
         else:
             s_doc = 0.0
 
+        # Grade Sheet & Transcript affinity boost
+        if is_aggregate_query and ("grade" in src_lower or "mark" in src_lower or "exam" in text_lower or "cgpa" in text_lower or "semester" in text_lower):
+            s_doc += 0.45
+
         # Vector score
         key = f"{src_name}_{str(page_num)}_{text[:50]}"
         s_vec = vector_scores.get(key, 0.0)
 
         # Composite score
-        # Priority: Lexical overlap (45%), Exact phrase (30%), Document relevance (15%), Vector score (10%)
         total_score = (0.45 * s_lex) + (0.30 * s_exact) + (0.15 * s_doc) + (0.10 * s_vec)
 
         if total_score > 0.05:
@@ -174,32 +186,24 @@ def retrieve_hybrid_context(
             best_per_doc[src] = c["score"]
 
     # Minimum relevance threshold
-    RELEVANCE_THRESHOLD = 0.16
+    RELEVANCE_THRESHOLD = 0.18
 
-    # For a document to be valid, it must have keyword overlap or strong semantic alignment
+    # Strictly keep only documents closely aligned with top match (top_score * 0.70)
+    # This prevents Python/Git documents from bleeding into Grade Sheet queries and vice versa.
     valid_sources = {
         src for src, best_s in best_per_doc.items()
-        if best_s >= RELEVANCE_THRESHOLD and best_s >= (top_score * 0.45)
+        if best_s >= RELEVANCE_THRESHOLD and best_s >= (top_score * 0.70)
     }
 
     if not valid_sources or top_score < RELEVANCE_THRESHOLD:
         return [], []
 
-    # Aggregate & transcript query keywords requiring complete document context
-    AGGREGATE_TERMS = {
-        "cgpa", "sgpa", "gpa", "grade", "grades", "mark", "marks", "marksheet",
-        "transcript", "credit", "credits", "semester", "sem", "calculate",
-        "summary", "breakdown", "all courses", "all subjects", "percentage",
-        "performance", "exam", "result", "results"
-    }
-    is_aggregate_query = any(t in query_terms for t in AGGREGATE_TERMS)
-
     accepted_chunks = []
     accepted_sources = list(valid_sources)
 
     # For aggregate queries (e.g. Grade Sheet / Transcript analysis) or short documents,
-    # supply all pages in chronological order to prevent data loss or course omission.
-    if is_aggregate_query or len(doc_texts) <= 10:
+    # supply all pages in chronological order up to 8 chunks to prevent token overflow.
+    if is_aggregate_query or len(doc_texts) <= 8:
         for text, meta in zip(doc_texts, doc_metas):
             src = meta.get("source") or meta.get("document_name") or "Document"
             if src in valid_sources:
@@ -210,13 +214,15 @@ def retrieve_hybrid_context(
                     "page": meta.get("page", 1),
                     "metadata": meta,
                 })
+                if len(accepted_chunks) >= 8:
+                    break
         # Sort chronologically by page number
         accepted_chunks.sort(key=lambda x: int(x.get("page") or 1))
     else:
         for c in scored_candidates:
             if c["source"] in valid_sources and c["score"] >= RELEVANCE_THRESHOLD:
                 accepted_chunks.append(c)
-                if len(accepted_chunks) >= 5:
+                if len(accepted_chunks) >= 6:
                     break
 
     return accepted_chunks, accepted_sources
@@ -256,21 +262,18 @@ def answer_question(
             "3. Detailed Course Breakdown: Show each semester with exact subject codes, course titles, credits, grades, and grade points from the document.\n\n"
             "Study Notes & Technical Concepts:\n"
             "1. Plain-English Explanation: Explain the concept in 2-3 clear, simple sentences.\n"
-            "2. Clean Code / Example: Provide a short, practical code snippet with comments.\n"
+            "2. Clean Code / Example: Provide a short, practical code snippet with comments if relevant.\n"
             "3. Key Takeaway: Give a 1-sentence bottom line."
         )
         user_content = f"Document Excerpts:\n{context_text}\n\nStudent Question: {question}"
     else:
         system_prompt = (
             "You are CampusMind, a friendly, direct, and ultra-clear academic AI co-pilot for college students.\n\n"
-            "Communication Style:\n"
-            "- Direct & Plain English: Answer directly in simple, friendly, easy-to-understand language. Avoid dense robotic textbook lectures or raw LaTeX math code.\n"
-            "- Structured Format:\n"
-            "  * 🎯 **Direct Answer**: 2-3 clear sentences answering the question immediately.\n"
-            "  * 📋 **Key Highlights**: Simple bullet points explaining the core points.\n"
-            "  * 💻 **Code Example (if applicable)**: Clean, readable syntax.\n"
-            "  * 💡 **Pro-Tip**: A quick practical takeaway.\n"
-            "- Supportive Tone: Keep answers concise, engaging, and fast to read."
+            "Communication Directives:\n"
+            "1. Simple, Direct & Conversational: Answer directly in simple, clear, everyday English. Avoid dense robotic textbook lectures or raw LaTeX math code.\n"
+            "2. No Code Unless Requested: Do NOT provide programming code blocks (like Python scripts) unless the student explicitly asks for code or programming solutions.\n"
+            "3. Clear Step-by-Step Guidance: When explaining academic concepts or formulas (like CGPA/SGPA calculation), explain the steps in simple words with a practical real-world example.\n"
+            "4. Upload Tip: If the question is about university marks or policies, kindly mention that uploading their grade sheet or syllabus PDF will allow exact automatic calculation."
         )
         user_content = f"Student Question: {question}"
 
