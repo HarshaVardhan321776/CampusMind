@@ -1,4 +1,5 @@
 import os
+import re
 from groq import Groq
 from langchain_community.vectorstores import Chroma
 from app.core.config import settings
@@ -10,8 +11,8 @@ client = Groq(api_key=settings.GROQ_API_KEY)
 GROQ_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
-    "qwen/qwen3.6-27b",
-    "groq/compound"
+    "groq/compound",
+    "qwen/qwen3.6-27b"
 ]
 
 
@@ -23,29 +24,60 @@ def get_vectorstore():
     )
 
 
-def answer_question(question: str, chat_history: list[dict] | None = None) -> dict:
+def clean_model_output(text: str) -> str:
+    """Strip internal reasoning tags e.g. <think>...</think> from models like Qwen."""
+    if not text:
+        return ""
+    # Remove <think>...</think> tags and their contents
+    cleaned = re.sub(r"<think>[\s\S]*?<\/think>", "", text).strip()
+    return cleaned
+
+
+def answer_question(
+    question: str,
+    user_id: int | None = None,
+    document_id: int | None = None,
+    chat_history: list[dict] | None = None,
+) -> dict:
     vectorstore = get_vectorstore()
-    
-    # Retrieve top relevant context chunks
+
+    # Build Chroma filter query
+    where_filter = None
+    if user_id is not None and document_id is not None:
+        where_filter = {"$and": [{"user_id": int(user_id)}, {"document_id": int(document_id)}]}
+    elif user_id is not None:
+        where_filter = {"user_id": int(user_id)}
+    elif document_id is not None:
+        where_filter = {"document_id": int(document_id)}
+
+    # Retrieve top relevant context chunks with filtering
+    results = []
     try:
-        results = vectorstore.similarity_search(question, k=6)
+        if where_filter:
+            results = vectorstore.similarity_search(question, k=6, filter=where_filter)
+        else:
+            results = vectorstore.similarity_search(question, k=6)
     except Exception as e:
         print(f"[RAG Vector Search Error]: {e}")
-        results = []
+        try:
+            results = vectorstore.similarity_search(question, k=6)
+        except Exception:
+            results = []
 
     if not results:
+        target_doc_msg = " in the selected document" if document_id else ""
         return {
-            "answer": "I couldn't find anything relevant in the uploaded documents to answer that. Please ensure relevant documents are uploaded in the Knowledge Base.",
+            "answer": f"I couldn't find anything relevant{target_doc_msg} to answer your question. Please ensure the relevant document is uploaded in your Knowledge Base.",
             "sources": [],
         }
 
     context_blocks = []
     sources = []
     for i, doc in enumerate(results):
-        source_name = doc.metadata.get("source", "Document")
+        source_name = doc.metadata.get("source") or doc.metadata.get("document_name") or "Document"
         page_num = doc.metadata.get("page")
         page_info = f" (Page {page_num})" if page_num else ""
-        
+
         context_blocks.append(f"[Excerpt {i+1} from {source_name}{page_info}]\n{doc.page_content.strip()}")
         if source_name not in sources:
             sources.append(source_name)
@@ -86,9 +118,11 @@ def answer_question(question: str, chat_history: list[dict] | None = None) -> di
                 temperature=0.2,
                 max_tokens=1024,
             )
-            answer = completion.choices[0].message.content
-            if answer:
-                break
+            raw_answer = completion.choices[0].message.content
+            if raw_answer:
+                answer = clean_model_output(raw_answer)
+                if answer:
+                    break
         except Exception as e:
             print(f"[Groq Model {model_name} Error]: {e}")
             last_error = e

@@ -7,7 +7,7 @@ from app.core.deps import get_current_user
 from app.models.user import User
 from app.models.document import Document
 from app.schemas.document import DocumentOut
-from app.services.embeddings import process_document
+from app.services.embeddings import process_document, delete_document_embeddings
 
 from app.core.config import settings
 
@@ -62,10 +62,14 @@ def upload_document(
             file_type=file_type,
             source_filename=file.filename,
             document_id=doc.id,
+            user_id=current_user.id,
         )
         print(f"[CampusMind] Document #{doc.id} ({file.filename}) processed into {num_chunks} chunks.")
     except Exception as e:
         print(f"[CampusMind Error] Document processing failed: {e}")
+        # Clean up database record if processing failed
+        db.delete(doc)
+        db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to process document: {str(e)}")
 
     return doc
@@ -77,7 +81,7 @@ def delete_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Delete a document record."""
+    """Delete a document record and purge its embeddings from ChromaDB."""
     doc = db.query(Document).filter(
         Document.id == document_id,
         Document.uploaded_by == current_user.id
@@ -85,6 +89,18 @@ def delete_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
+    # 1. Purge from ChromaDB
+    delete_document_embeddings(document_id=doc.id, user_id=current_user.id)
+
+    # 2. Purge file from disk if present
+    file_path = os.path.join(UPLOAD_DIR, doc.filename)
+    if os.path.exists(file_path):
+        try:
+            os.remove(file_path)
+        except Exception as e:
+            print(f"[CampusMind Warning]: Could not remove file {file_path}: {e}")
+
+    # 3. Delete from DB
     db.delete(doc)
     db.commit()
-    return {"status": "success", "message": "Document deleted successfully"}
+    return {"status": "success", "message": "Document and embeddings deleted successfully"}

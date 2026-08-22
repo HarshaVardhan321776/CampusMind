@@ -124,6 +124,12 @@ def load_document(file_path: str, file_type: str) -> list[Document]:
                 print(f"[CampusMind] OCR successfully extracted {len(ocr_docs)} pages with {sum(len(d.page_content) for d in ocr_docs)} characters!")
                 return ocr_docs
 
+        # Ensure page numbers are 1-indexed for PyPDFLoader (which uses 0-indexed page numbers)
+        for doc in digital_docs:
+            if "page" in doc.metadata and isinstance(doc.metadata["page"], int):
+                # If 0-indexed, convert to 1-indexed
+                doc.metadata["page"] = doc.metadata["page"] + 1
+
         return digital_docs
 
     else:
@@ -139,15 +145,48 @@ def chunk_documents(documents: list[Document], chunk_size: int = 800, chunk_over
     return splitter.split_documents(documents)
 
 
-def embed_and_store(chunks: list[Document], source_filename: str, document_id: int):
-    """Generate embeddings for chunks and store them in ChromaDB."""
+def delete_document_embeddings(document_id: int, user_id: int | None = None):
+    """Delete all vector embeddings associated with a given document_id from ChromaDB."""
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=CHROMA_DIR)
+        collection = client.get_or_create_collection(COLLECTION_NAME)
+        
+        # Chroma where filter
+        if user_id is not None:
+            where_clause = {"$and": [{"document_id": int(document_id)}, {"user_id": int(user_id)}]}
+        else:
+            where_clause = {"document_id": int(document_id)}
+            
+        existing = collection.get(where=where_clause)
+        if existing and existing.get("ids"):
+            collection.delete(ids=existing["ids"])
+            print(f"[CampusMind] Purged {len(existing['ids'])} vector chunks for doc #{document_id} from ChromaDB.")
+        return True
+    except Exception as e:
+        print(f"[CampusMind Chroma Delete Error] for doc #{document_id}: {e}")
+        return False
+
+
+def embed_and_store(chunks: list[Document], source_filename: str, document_id: int, user_id: int):
+    """Generate embeddings for chunks and store them in ChromaDB with complete user and document metadata."""
     if not chunks:
         print(f"[Embed Warning]: No text chunks to embed for {source_filename}")
         return 0
 
+    # Purge any previous embeddings for this document ID to prevent duplicate chunk buildup
+    delete_document_embeddings(document_id, user_id)
+
     for chunk in chunks:
         chunk.metadata["source"] = source_filename
-        chunk.metadata["document_id"] = document_id
+        chunk.metadata["document_name"] = source_filename
+        chunk.metadata["document_id"] = int(document_id)
+        chunk.metadata["user_id"] = int(user_id)
+        if "page" in chunk.metadata:
+            try:
+                chunk.metadata["page"] = int(chunk.metadata["page"])
+            except Exception:
+                pass
 
     vectorstore = Chroma(
         collection_name=COLLECTION_NAME,
@@ -160,9 +199,9 @@ def embed_and_store(chunks: list[Document], source_filename: str, document_id: i
     return len(chunks)
 
 
-def process_document(file_path: str, file_type: str, source_filename: str, document_id: int) -> int:
-    """Full pipeline: load -> chunk -> embed -> store. Returns number of chunks created."""
+def process_document(file_path: str, file_type: str, source_filename: str, document_id: int, user_id: int) -> int:
+    """Full pipeline: load -> chunk -> embed -> store with user scoping. Returns number of chunks created."""
     documents = load_document(file_path, file_type)
     chunks = chunk_documents(documents)
-    num_chunks = embed_and_store(chunks, source_filename, document_id)
+    num_chunks = embed_and_store(chunks, source_filename, document_id, user_id)
     return num_chunks

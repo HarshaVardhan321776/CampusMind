@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -39,7 +39,12 @@ def ask_question(
 
     chat_history = [{"role": m.role, "content": m.content} for m in previous_messages]
 
-    result = answer_question(request.question, chat_history=chat_history)
+    result = answer_question(
+        question=request.question,
+        user_id=current_user.id,
+        document_id=request.document_id,
+        chat_history=chat_history,
+    )
 
     user_msg = Message(conversation_id=conversation.id, role="user", content=request.question)
     db.add(user_msg)

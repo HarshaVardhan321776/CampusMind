@@ -98,7 +98,6 @@ st.markdown(f"""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-
 <style>
     /* Global Reset & Typography */
     html, body, [class*="css"] {{
@@ -111,24 +110,22 @@ st.markdown(f"""
         color: {THEME['text_primary']} !important;
     }}
     
-    /* General Text Elements (Excluding Button Contents) */
-    p:not(.stButton *):not(button *), 
-    span:not(.stButton *):not(button *), 
-    label, 
-    div[data-testid="stMarkdownContainer"]:not(.stButton *):not(button *) p, 
-    [data-testid="stMarkdownContainer"]:not(.stButton *):not(button *) li, 
-    [data-testid="stMarkdownContainer"]:not(.stButton *):not(button *) span {{
+    /* General Text Elements */
+    p, span, label,
+    div[data-testid="stMarkdownContainer"] p, 
+    [data-testid="stMarkdownContainer"] li, 
+    [data-testid="stMarkdownContainer"] span {{
         color: {THEME['text_primary']} !important;
     }}
     
-    [data-testid="stMarkdownContainer"]:not(.stButton *):not(button *) strong, 
-    [data-testid="stMarkdownContainer"]:not(.stButton *):not(button *) b {{
+    [data-testid="stMarkdownContainer"] strong, 
+    [data-testid="stMarkdownContainer"] b {{
         color: {THEME['text_primary']} !important;
         font-weight: 600 !important;
     }}
     
-    [data-testid="stMarkdownContainer"]:not(.stButton *):not(button *) em, 
-    [data-testid="stMarkdownContainer"]:not(.stButton *):not(button *) i {{
+    [data-testid="stMarkdownContainer"] em, 
+    [data-testid="stMarkdownContainer"] i {{
         color: {THEME['text_secondary']} !important;
     }}
     
@@ -149,8 +146,8 @@ st.markdown(f"""
         background-color: {THEME['surface']} !important;
         border-right: 1px solid {THEME['border']} !important;
     }}
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:not(.stButton *) p, 
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"]:not(.stButton *) span {{
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p, 
+    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] span {{
         color: {THEME['text_primary']} !important;
     }}
     
@@ -227,9 +224,13 @@ st.markdown(f"""
     }}
     
     /* =========================================================================
-       BUTTON STYLES (PREVENTS TEXT WRAPPING & KEEPS CONTRAST)
+       BUTTON STYLES (EXPLICIT PRIMARY & SECONDARY CONTRAST)
        ========================================================================= */
-    .stButton > button {{
+    /* Primary Buttons (Default or kind="primary") */
+    .stButton > button,
+    .stButton > button[kind="primary"],
+    .stButton > button[data-testid="baseButton-primary"],
+    div[data-testid="stFormSubmitButton"] > button {{
         background: {THEME['accent_gradient']} !important;
         color: #FFFFFF !important;
         -webkit-text-fill-color: #FFFFFF !important;
@@ -243,10 +244,10 @@ st.markdown(f"""
         min-height: 40px !important;
     }}
     
-    .stButton > button *,
-    .stButton > button p,
-    .stButton > button span,
-    .stButton > button div {{
+    .stButton > button:not([kind="secondary"]):not([data-testid="baseButton-secondary"]) *,
+    .stButton > button[kind="primary"] *,
+    .stButton > button[data-testid="baseButton-primary"] *,
+    div[data-testid="stFormSubmitButton"] > button * {{
         color: #FFFFFF !important;
         -webkit-text-fill-color: #FFFFFF !important;
         font-weight: 600 !important;
@@ -259,8 +260,11 @@ st.markdown(f"""
     }}
     
     /* Secondary Buttons */
-    .stButton > button[kind="secondary"] {{
+    .stButton > button[kind="secondary"],
+    .stButton > button[data-testid="baseButton-secondary"] {{
+        background: {THEME['surface_card']} !important;
         background-color: {THEME['surface_card']} !important;
+        background-image: none !important;
         color: {THEME['text_primary']} !important;
         -webkit-text-fill-color: {THEME['text_primary']} !important;
         border: 1px solid {THEME['border']} !important;
@@ -268,32 +272,43 @@ st.markdown(f"""
         font-weight: 500 !important;
         white-space: nowrap !important;
     }}
+    
     .stButton > button[kind="secondary"] *,
     .stButton > button[kind="secondary"] p,
-    .stButton > button[kind="secondary"] span {{
+    .stButton > button[kind="secondary"] span,
+    .stButton > button[kind="secondary"] div,
+    .stButton > button[data-testid="baseButton-secondary"] *,
+    .stButton > button[data-testid="baseButton-secondary"] p,
+    .stButton > button[data-testid="baseButton-secondary"] span,
+    .stButton > button[data-testid="baseButton-secondary"] div {{
         color: {THEME['text_primary']} !important;
         -webkit-text-fill-color: {THEME['text_primary']} !important;
+        font-weight: 500 !important;
         white-space: nowrap !important;
     }}
     
-    .stButton > button[kind="secondary"]:hover {{
+    .stButton > button[kind="secondary"]:hover,
+    .stButton > button[data-testid="baseButton-secondary"]:hover {{
         background-color: {THEME['surface_hover']} !important;
         border-color: {THEME['accent']} !important;
     }}
-    .stButton > button[kind="secondary"]:hover * {{
+    .stButton > button[kind="secondary"]:hover *,
+    .stButton > button[data-testid="baseButton-secondary"]:hover * {{
         color: {THEME['accent']} !important;
         -webkit-text-fill-color: {THEME['accent']} !important;
     }}
     
     /* =========================================================================
-       FORM INPUTS (UNIFIED BACKGROUND & TEXT)
+       FORM INPUTS & SELECTBOXES (UNIFIED BACKGROUND & TEXT)
        ========================================================================= */
     .stTextInput > div,
     .stTextInput > div > div,
     div[data-baseweb="input"],
     div[data-baseweb="input"] > div,
     div[data-baseweb="base-input"],
+    .stSelectbox > div,
     .stSelectbox > div > div,
+    div[data-baseweb="select"],
     div[data-baseweb="select"] > div {{
         background-color: {THEME['surface_card']} !important;
         color: {THEME['text_primary']} !important;
@@ -302,7 +317,8 @@ st.markdown(f"""
         border-radius: 8px !important;
     }}
     
-    .stTextInput input {{
+    .stTextInput input,
+    .stSelectbox input {{
         background-color: transparent !important;
         color: {THEME['text_primary']} !important;
         -webkit-text-fill-color: {THEME['text_primary']} !important;
@@ -316,9 +332,27 @@ st.markdown(f"""
         -webkit-text-fill-color: {THEME['text_muted']} !important;
     }}
     
-    div[data-baseweb="input"]:focus-within {{
+    div[data-baseweb="input"]:focus-within,
+    div[data-baseweb="select"]:focus-within {{
         border-color: {THEME['accent']} !important;
         box-shadow: 0 0 0 2px {THEME['accent_glow']} !important;
+    }}
+    
+    /* BaseWeb Dropdown Popovers */
+    div[data-baseweb="popover"],
+    div[data-baseweb="menu"],
+    ul[data-baseweb="menu"],
+    li[role="option"] {{
+        background-color: {THEME['surface_card']} !important;
+        color: {THEME['text_primary']} !important;
+    }}
+    li[role="option"]:hover,
+    li[role="option"][aria-selected="true"] {{
+        background-color: {THEME['surface_hover']} !important;
+        color: {THEME['accent']} !important;
+    }}
+    li[role="option"] * {{
+        color: {THEME['text_primary']} !important;
     }}
     
     /* Tab Styling */
@@ -425,6 +459,10 @@ st.markdown(f"""
         color: {THEME['text_muted']} !important;
         -webkit-text-fill-color: {THEME['text_muted']} !important;
     }}
+    [data-testid="stChatInput"] button svg {{
+        fill: {THEME['accent']} !important;
+        stroke: {THEME['accent']} !important;
+    }}
     
     /* File Uploader */
     [data-testid="stFileUploader"] section {{
@@ -450,7 +488,10 @@ st.markdown(f"""
         border: 1px solid {THEME['border']} !important;
         border-radius: 8px !important;
     }}
-    [data-testid="stExpander"] * {{
+    [data-testid="stExpander"] summary {{
+        color: {THEME['text_primary']} !important;
+    }}
+    [data-testid="stExpander"] summary * {{
         color: {THEME['text_primary']} !important;
     }}
 </style>
@@ -614,6 +655,8 @@ def render_auth():
             t_label = "☀️ Light Theme" if is_dark else "🌙 Dark Theme"
             if st.button(t_label, key="auth_theme_btn", use_container_width=True, type="secondary"):
                 st.session_state.theme = "light" if is_dark else "dark"
+                if "settings_theme_radio" in st.session_state:
+                    st.session_state.settings_theme_radio = "☀️ Light Mode" if st.session_state.theme == "light" else "🌙 Dark Mode (Default)"
                 st.rerun()
 
         st.markdown('<div class="pro-card">', unsafe_allow_html=True)
@@ -799,6 +842,8 @@ def render_sidebar():
             t_label = "☀️ Light" if is_dark else "🌙 Dark"
             if st.button(t_label, key="sidebar_theme_toggle_btn", use_container_width=True, type="secondary"):
                 st.session_state.theme = "light" if is_dark else "dark"
+                if "settings_theme_radio" in st.session_state:
+                    st.session_state.settings_theme_radio = "☀️ Light Mode" if st.session_state.theme == "light" else "🌙 Dark Mode (Default)"
                 st.rerun()
         with col_lo:
             if st.button("Sign Out", key="btn_logout", use_container_width=True, type="secondary"):
@@ -828,6 +873,30 @@ def render_chat():
         </div>
     </div>
     """, unsafe_allow_html=True)
+
+    # Document Focus Selector Bar
+    user_docs = st.session_state.user_docs or refresh_documents()
+    doc_options = {"all": "📚 All Uploaded Documents"}
+    for d in user_docs:
+        doc_options[str(d["id"])] = f"📄 {d['filename']}"
+
+    col_sel, col_stat = st.columns([2.5, 1])
+    with col_sel:
+        selected_doc_key = st.selectbox(
+            "Focus Knowledge Base (Optional):",
+            options=list(doc_options.keys()),
+            format_func=lambda k: doc_options.get(k, k),
+            key="chat_doc_focus_selector",
+            help="Target a specific document (e.g. Python Notes) or search across all your uploaded files."
+        )
+    with col_stat:
+        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+        if selected_doc_key != "all":
+            st.markdown("<span class='source-pill'>🎯 Single Document Scoped</span>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<span class='source-pill'>📚 {len(user_docs)} Files Active</span>", unsafe_allow_html=True)
+
+    active_doc_id = int(selected_doc_key) if selected_doc_key != "all" and selected_doc_key.isdigit() else None
 
     # Empty State: Hero Banner & Suggestion Chips
     if not st.session_state.messages:
@@ -904,6 +973,8 @@ def render_chat():
                 payload = {"question": prompt}
                 if st.session_state.current_conversation_id:
                     payload["conversation_id"] = st.session_state.current_conversation_id
+                if active_doc_id is not None:
+                    payload["document_id"] = active_doc_id
 
                 ok, res = api_call("POST", "/chat/ask", json_body=payload, require_auth=True)
 
@@ -1062,16 +1133,20 @@ def render_settings():
                     
         st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
         st.markdown("<h3 style='font-size: 1.05rem; margin-top: 0;'>🎨 Theme Preference</h3>", unsafe_allow_html=True)
-        theme_choice = st.radio(
+        
+        def on_settings_theme_change():
+            val = st.session_state.get("settings_theme_radio", "")
+            st.session_state.theme = "dark" if "Dark" in val else "light"
+            
+        theme_options = ["🌙 Dark Mode (Default)", "☀️ Light Mode"]
+        current_theme_idx = 0 if st.session_state.theme == "dark" else 1
+        st.radio(
             "Select Interface Theme",
-            ["🌙 Dark Mode (Default)", "☀️ Light Mode"],
-            index=0 if st.session_state.theme == "dark" else 1,
-            key="settings_theme_radio"
+            theme_options,
+            index=current_theme_idx,
+            key="settings_theme_radio",
+            on_change=on_settings_theme_change,
         )
-        target_theme = "dark" if "Dark" in theme_choice else "light"
-        if target_theme != st.session_state.theme:
-            st.session_state.theme = target_theme
-            st.rerun()
             
         st.markdown('</div>', unsafe_allow_html=True)
 

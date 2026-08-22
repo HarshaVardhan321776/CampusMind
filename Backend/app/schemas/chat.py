@@ -1,10 +1,11 @@
-﻿from pydantic import BaseModel
+from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 
 class ChatRequest(BaseModel):
     question: str
     conversation_id: Optional[int] = None
+    document_id: Optional[int] = None
 
 class ChatResponse(BaseModel):
     answer: str
