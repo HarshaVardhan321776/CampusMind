@@ -2,16 +2,49 @@ import os
 import numpy as np
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import SentenceTransformerEmbeddings
+import hashlib
+import re
+from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
-
 from app.core.config import settings
 
 CHROMA_DIR = settings.CHROMA_DIR
 COLLECTION_NAME = "campusmind_docs"
 
-embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+
+class LightweightHashEmbeddings(Embeddings):
+    """Memory-safe, zero-PyTorch, deterministic 384-dim feature hashing embedding for lightweight deployments."""
+    def __init__(self, dimension: int = 384):
+        self.dimension = dimension
+
+    def _embed_text(self, text: str) -> list[float]:
+        if not text:
+            return [0.0] * self.dimension
+        vec = np.zeros(self.dimension, dtype=np.float32)
+        words = re.findall(r"\b\w+\b", text.lower())
+        for i, word in enumerate(words):
+            # Token hashing
+            h_val = int(hashlib.md5(word.encode("utf-8")).hexdigest(), 16)
+            vec[h_val % self.dimension] += 1.0
+            # Bigram hashing for local phrasing
+            if i < len(words) - 1:
+                bg = f"{word}_{words[i+1]}"
+                h_bg = int(hashlib.md5(bg.encode("utf-8")).hexdigest(), 16)
+                vec[h_bg % self.dimension] += 1.5
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        return vec.tolist()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed_text(t) for t in texts]
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_text(text)
+
+
+embedding_function = LightweightHashEmbeddings()
 
 # Initialize OCR Engine for scanned/handwritten documents
 _ocr_engine = None

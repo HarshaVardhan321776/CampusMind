@@ -1,5 +1,6 @@
 import os
 import re
+import chromadb
 from groq import Groq
 from langchain_community.vectorstores import Chroma
 from app.core.config import settings
@@ -14,6 +15,18 @@ GROQ_MODELS = [
     "openai/gpt-oss-safeguard-20b",
     "qwen/qwen3.6-27b"
 ]
+
+STOPWORDS = {
+    "what", "is", "a", "an", "the", "in", "on", "at", "to", "for", "of", "and", "or",
+    "how", "do", "does", "did", "can", "could", "would", "should", "will", "are", "were",
+    "was", "be", "been", "being", "have", "has", "had", "with", "by", "from", "about",
+    "into", "through", "during", "before", "after", "above", "below", "up", "down", "out",
+    "off", "over", "under", "again", "further", "then", "once", "here", "there", "when",
+    "where", "why", "all", "any", "both", "each", "few", "more", "most", "other", "some",
+    "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too", "very",
+    "tell", "me", "explain", "describe", "write", "give", "example", "examples", "please",
+    "i", "my", "we", "our", "you", "your", "they", "their", "it", "its", "this", "that"
+}
 
 
 def get_vectorstore():
@@ -32,85 +45,196 @@ def clean_model_output(text: str) -> str:
     return cleaned
 
 
+def retrieve_hybrid_context(
+    question: str,
+    user_id: int | None = None,
+    document_id: int | None = None,
+) -> tuple[list[dict], list[str]]:
+    """
+    High-Precision Hybrid Retrieval Pipeline:
+    1. Extracts non-stopword domain keywords from question.
+    2. Enforces strict user & document scoping in ChromaDB.
+    3. Retrieves candidate vector matches.
+    4. Performs exact keyword and lexical scanning across user's chunks (Exact Content Fallback).
+    5. Calculates composite lexical + exact-match + document-affinity + vector scores.
+    6. Penalizes/discards cross-topic irrelevant chunks (e.g. Git sheet for Python questions).
+    7. Applies strict relevance threshold.
+    Returns: (list of accepted chunk dicts, list of verified source names).
+    """
+    if user_id is None:
+        return [], []
+
+    where_filter = {"user_id": int(user_id)}
+    if document_id is not None:
+        where_filter = {"$and": [{"user_id": int(user_id)}, {"document_id": int(document_id)}]}
+
+    # Extract non-stopword query keywords
+    raw_tokens = re.findall(r"\b\w+\b", question.lower())
+    query_terms = [t for t in raw_tokens if t not in STOPWORDS and len(t) > 1]
+    normalized_q = " ".join(query_terms)
+
+    # 1. Fetch user chunks directly from ChromaDB
+    try:
+        chroma_client = chromadb.PersistentClient(path=CHROMA_DIR)
+        collection = chroma_client.get_collection(COLLECTION_NAME)
+        user_records = collection.get(where=where_filter, include=["documents", "metadatas"])
+    except Exception as e:
+        print(f"[Chroma Retrieval Error]: {e}")
+        return [], []
+
+    if not user_records or not user_records.get("documents"):
+        return [], []
+
+    doc_texts = user_records["documents"]
+    doc_metas = user_records["metadatas"]
+    num_chunks = len(doc_texts)
+
+    # 2. Perform Vector Similarity Search
+    vector_scores = {}
+    try:
+        vectorstore = get_vectorstore()
+        vec_matches = vectorstore.similarity_search_with_score(question, k=min(15, num_chunks), filter=where_filter)
+        for doc_obj, distance in vec_matches:
+            src = doc_obj.metadata.get("source") or doc_obj.metadata.get("document_name") or ""
+            pg = str(doc_obj.metadata.get("page", ""))
+            key = f"{src}_{pg}_{doc_obj.page_content[:50]}"
+            vector_scores[key] = max(0.0, 1.0 - (distance / 2.0))
+    except Exception as e:
+        print(f"[Vector Search Fallback Warning]: {e}")
+
+    # 3. Score all user chunks using Hybrid Lexical + Exact + Doc-Affinity + Vector metrics
+    scored_candidates = []
+
+    for text, meta in zip(doc_texts, doc_metas):
+        text_lower = text.lower()
+        src_name = meta.get("source") or meta.get("document_name") or "Document"
+        src_lower = src_name.lower()
+        page_num = meta.get("page")
+
+        # Lexical term overlap
+        if query_terms:
+            matched_terms = [t for t in query_terms if t in text_lower]
+            s_lex = len(matched_terms) / len(query_terms)
+        else:
+            s_lex = 0.0
+
+        # Exact phrase and sub-phrase matching (Exact Content Fallback)
+        s_exact = 0.0
+        if len(query_terms) > 1 and normalized_q in text_lower:
+            s_exact = 1.0
+        elif len(query_terms) > 1 and any(f"{query_terms[j]} {query_terms[j+1]}" in text_lower for j in range(len(query_terms)-1)):
+            s_exact = 0.6
+        elif any(t in text_lower for t in query_terms):
+            s_exact = 0.25
+
+        # Document filename affinity (e.g. "python" in "Python_Handbook.pdf")
+        if query_terms:
+            doc_term_matches = [t for t in query_terms if t in src_lower]
+            s_doc = len(doc_term_matches) / len(query_terms)
+        else:
+            s_doc = 0.0
+
+        # Vector score
+        key = f"{src_name}_{str(page_num)}_{text[:50]}"
+        s_vec = vector_scores.get(key, 0.0)
+
+        # Composite score
+        # Priority: Lexical overlap (45%), Exact phrase (30%), Document relevance (15%), Vector score (10%)
+        total_score = (0.45 * s_lex) + (0.30 * s_exact) + (0.15 * s_doc) + (0.10 * s_vec)
+
+        if total_score > 0.05:
+            scored_candidates.append({
+                "score": total_score,
+                "s_lex": s_lex,
+                "s_doc": s_doc,
+                "text": text,
+                "source": src_name,
+                "page": page_num,
+                "metadata": meta,
+            })
+
+    if not scored_candidates:
+        return [], []
+
+    # Sort descending by hybrid score
+    scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+
+    # 4. Cross-Document Noise Suppression
+    top_score = scored_candidates[0]["score"]
+    
+    # Calculate best score per document
+    best_per_doc = {}
+    for c in scored_candidates:
+        src = c["source"]
+        if src not in best_per_doc or c["score"] > best_per_doc[src]:
+            best_per_doc[src] = c["score"]
+
+    # Minimum relevance threshold (documented threshold: 0.16)
+    RELEVANCE_THRESHOLD = 0.16
+
+    # If top score is below threshold, no document is sufficiently relevant
+    if top_score < RELEVANCE_THRESHOLD:
+        return [], []
+
+    # Keep documents matching top domain score (eliminates unrelated topic bleed)
+    valid_sources = {
+        src for src, best_s in best_per_doc.items()
+        if best_s >= RELEVANCE_THRESHOLD and best_s >= (top_score * 0.45)
+    }
+
+    accepted_chunks = []
+    accepted_sources = []
+
+    for c in scored_candidates:
+        if c["source"] in valid_sources and c["score"] >= RELEVANCE_THRESHOLD:
+            accepted_chunks.append(c)
+            if c["source"] not in accepted_sources:
+                accepted_sources.append(c["source"])
+            if len(accepted_chunks) >= 5:
+                break
+
+    return accepted_chunks, accepted_sources
+
+
 def answer_question(
     question: str,
     user_id: int | None = None,
     document_id: int | None = None,
     chat_history: list[dict] | None = None,
 ) -> dict:
-    vectorstore = get_vectorstore()
-
-    # Build Chroma filter query
-    where_filter = None
-    if user_id is not None and document_id is not None:
-        where_filter = {"$and": [{"user_id": int(user_id)}, {"document_id": int(document_id)}]}
-    elif user_id is not None:
-        where_filter = {"user_id": int(user_id)}
-    elif document_id is not None:
-        where_filter = {"document_id": int(document_id)}
-
-    # Retrieve candidate chunks with similarity scores
-    scored_results = []
-    try:
-        if where_filter:
-            scored_results = vectorstore.similarity_search_with_score(question, k=12, filter=where_filter)
-        else:
-            scored_results = vectorstore.similarity_search_with_score(question, k=12)
-    except Exception as e:
-        print(f"[RAG Vector Search Error]: {e}")
-        try:
-            scored_results = vectorstore.similarity_search_with_score(question, k=12)
-        except Exception:
-            scored_results = []
-
-    # Semantic relevance filtering and cross-document noise suppression
-    filtered_docs = []
-    if scored_results:
-        min_score = min(s for d, s in scored_results)
-        
-        # Calculate best score per document to isolate matching subject matter
-        doc_best_scores = {}
-        for doc, score in scored_results:
-            src = doc.metadata.get("source") or doc.metadata.get("document_name") or "doc"
-            if src not in doc_best_scores or score < doc_best_scores[src]:
-                doc_best_scores[src] = score
-
-        # Keep documents whose best chunk is closely aligned with top match (eliminates unrelated topic bleed)
-        valid_doc_sources = {
-            src for src, best_s in doc_best_scores.items()
-            if best_s <= max(1.08, min_score + 0.28)
-        }
-
-        for doc, score in scored_results:
-            src = doc.metadata.get("source") or doc.metadata.get("document_name") or "doc"
-            if src in valid_doc_sources and score <= max(1.12, min_score + 0.32):
-                filtered_docs.append(doc)
-                if len(filtered_docs) >= 6:
-                    break
+    accepted_chunks, sources = retrieve_hybrid_context(
+        question=question,
+        user_id=user_id,
+        document_id=document_id,
+    )
 
     context_blocks = []
-    sources = []
-    if filtered_docs:
-        for i, doc in enumerate(filtered_docs):
-            source_name = doc.metadata.get("source") or doc.metadata.get("document_name") or "Document"
-            page_num = doc.metadata.get("page")
+    if accepted_chunks:
+        for i, chunk in enumerate(accepted_chunks):
+            source_name = chunk["source"]
+            page_num = chunk["page"]
             page_info = f" (Page {page_num})" if page_num else ""
+            context_blocks.append(f"[Excerpt {i+1} from {source_name}{page_info}]\n{chunk['text'].strip()}")
 
-            context_blocks.append(f"[Excerpt {i+1} from {source_name}{page_info}]\n{doc.page_content.strip()}")
-            if source_name not in sources:
-                sources.append(source_name)
+    # If no relevant chunks passed threshold
+    if not context_blocks:
+        target_msg = " in the selected document" if document_id else " in your uploaded documents"
+        return {
+            "answer": f"I couldn't find relevant information{target_msg} to answer your question. Please ensure the relevant document is uploaded to your Knowledge Base.",
+            "sources": [],
+        }
 
-    context_text = "\n\n".join(context_blocks) if context_blocks else "No relevant document excerpts found."
+    context_text = "\n\n".join(context_blocks)
 
     system_prompt = (
         "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant.\n\n"
         "Core Directives:\n"
-        "1. Complete Academic Answers: ALWAYS provide a complete, clear, and comprehensive answer to the student's question. NEVER say 'content is not available', 'not mentioned in the text', or refuse to answer. Explain concepts thoroughly with structured explanations, code examples, formulas, or step-by-step breakdowns.\n"
-        "2. Ground in Document Context: When relevant document excerpts are provided, integrate their specific definitions, examples, and rules into your explanation, and reference the source names (and page numbers if available).\n"
-        "3. Cross-Document Isolation: Focus strictly on the subject matter of the student's question. Do NOT bring up unrelated topics from other documents (e.g. never mix Git commands into Python programming questions, or vice versa).\n"
-        "4. Handwritten & OCR Notes: If excerpts contain OCR artifacts from handwritten notes (e.g. 'Obera tets in?y Hhon'), reconstruct and explain the intended academic concept ('Operators in Python') with perfect accuracy.\n"
-        "5. General Inquiries & Greetings: If the student sends a greeting ('Hi', 'Hello') or asks a general CS/academic question without document matches, provide a warm, helpful response and solve their query completely.\n"
-        "6. Formatting: Use crisp markdown with headings, bullet points, comparison tables, and syntax-highlighted code blocks."
+        "1. Strict Grounding: Answer the student's question accurately and thoroughly using ONLY the provided document excerpts.\n"
+        "2. Source Transparency: Reference the specific source document names (and page numbers where available) that contain the answer.\n"
+        "3. Complete Explanation: If the provided excerpts contain the answer, provide a well-structured, clear explanation using bullet points, numbered steps, or markdown code blocks where appropriate.\n"
+        "4. Handwritten & OCR Notes: If excerpts contain OCR artifacts from handwritten/scanned notes, interpret the intended academic meaning accurately.\n"
+        "5. No Fabrication: Do not fabricate facts not supported by the excerpts. If the excerpts do not contain enough information to fully answer the question, state clearly what is covered and what is missing.\n"
+        "6. No Unrelated Topics: Never cite or discuss unrelated topics not present in the relevant excerpts."
     )
 
     messages = [{"role": "system", "content": system_prompt}]
