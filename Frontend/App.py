@@ -887,7 +887,7 @@ def render_chat():
     for d in user_docs:
         doc_options[str(d["id"])] = f"📄 {d['filename']}"
 
-    col_sel, col_stat = st.columns([2.5, 1])
+    col_sel, col_btn = st.columns([3, 1])
     with col_sel:
         selected_doc_key = st.selectbox(
             "Focus Knowledge Base (Optional):",
@@ -896,12 +896,13 @@ def render_chat():
             key="chat_doc_focus_selector",
             help="Target a specific document (e.g. Python Notes) or search across all your uploaded files."
         )
-    with col_stat:
+    with col_btn:
         st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        if selected_doc_key != "all":
-            st.markdown("<span class='source-pill'>🎯 Single Document Scoped</span>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<span class='source-pill'>📚 {len(user_docs)} Files Active</span>", unsafe_allow_html=True)
+        if st.button("➕ New Chat", key="btn_header_new_chat", use_container_width=True, type="secondary"):
+            st.session_state.current_conversation_id = None
+            st.session_state.current_conversation_title = "New Chat"
+            st.session_state.messages = []
+            st.rerun()
 
     active_doc_id = int(selected_doc_key) if selected_doc_key != "all" and selected_doc_key.isdigit() else None
 

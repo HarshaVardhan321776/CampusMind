@@ -216,26 +216,28 @@ def answer_question(
             page_info = f" (Page {page_num})" if page_num else ""
             context_blocks.append(f"[Excerpt {i+1} from {source_name}{page_info}]\n{chunk['text'].strip()}")
 
-    # If no relevant chunks passed threshold
-    if not context_blocks:
-        target_msg = " in the selected document" if document_id else " in your uploaded documents"
-        return {
-            "answer": f"I couldn't find relevant information{target_msg} to answer your question. Please ensure the relevant document is uploaded to your Knowledge Base.",
-            "sources": [],
-        }
-
-    context_text = "\n\n".join(context_blocks)
-
-    system_prompt = (
-        "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant.\n\n"
-        "Core Directives:\n"
-        "1. Strict Grounding: Answer the student's question accurately and thoroughly using ONLY the provided document excerpts.\n"
-        "2. Source Transparency: Reference the specific source document names (and page numbers where available) that contain the answer.\n"
-        "3. Complete Explanation: If the provided excerpts contain the answer, provide a well-structured, clear explanation using bullet points, numbered steps, or markdown code blocks where appropriate.\n"
-        "4. Handwritten & OCR Notes: If excerpts contain OCR artifacts from handwritten/scanned notes, interpret the intended academic meaning accurately.\n"
-        "5. No Fabrication: Do not fabricate facts not supported by the excerpts. If the excerpts do not contain enough information to fully answer the question, state clearly what is covered and what is missing.\n"
-        "6. No Unrelated Topics: Never cite or discuss unrelated topics not present in the relevant excerpts."
-    )
+    if context_blocks:
+        context_text = "\n\n".join(context_blocks)
+        system_prompt = (
+            "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant.\n\n"
+            "Core Directives:\n"
+            "1. Grounded Academic Answers: Thoroughly and clearly answer the student's question, integrating the specific definitions, formulas, rules, and code snippets from the provided document excerpts.\n"
+            "2. Source Transparency: Reference the specific source document names (and page numbers where available) in your response.\n"
+            "3. Comprehensive Explanations: Provide well-structured explanations using markdown headings, bullet points, numbered steps, comparison tables, or syntax-highlighted code blocks.\n"
+            "4. Handwritten & OCR Notes: If excerpts contain OCR artifacts from handwritten/scanned notes, interpret the intended academic meaning accurately.\n"
+            "5. Strict Relevance: Focus on the student's question and relevant excerpts. Do not bring in unrelated topics from other subjects."
+        )
+        user_content = f"Document Excerpts:\n{context_text}\n\nStudent Question: {question}"
+    else:
+        system_prompt = (
+            "You are CampusMind, an expert, encouraging, and highly intelligent academic co-pilot and campus AI assistant.\n\n"
+            "Core Directives:\n"
+            "1. Comprehensive Academic Answers: ALWAYS provide a complete, clear, and comprehensive answer to the student's question. Explain concepts thoroughly with structured explanations, code examples, formulas, or step-by-step breakdowns.\n"
+            "2. Educational Clarity: Structure your response with clean markdown headings, bullet points, comparison tables, and syntax-highlighted code blocks.\n"
+            "3. Encouraging Tone: Be welcoming, articulate, and supportive of the student's learning journey.\n"
+            "4. Course Context Note: If the question appears to seek specific university/course policies (e.g. syllabus cutoff, attendance requirements), provide the general standard and kindly remind the student that they can upload their course PDF to get exact campus-specific rules."
+        )
+        user_content = f"Student Question: {question}"
 
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -244,7 +246,7 @@ def answer_question(
 
     messages.append({
         "role": "user",
-        "content": f"Document Excerpts:\n{context_text}\n\nStudent Question: {question}",
+        "content": user_content,
     })
 
     # Call LLM with fallback
