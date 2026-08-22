@@ -532,7 +532,7 @@ def api_call(method, endpoint, json_body=None, files=None, require_auth=True):
             resp = requests.get(url, headers=headers, timeout=15)
         elif method.upper() == "POST":
             if files:
-                resp = requests.post(url, headers=headers, files=files, timeout=60)
+                resp = requests.post(url, headers=headers, files=files, timeout=300)
             else:
                 headers["Content-Type"] = "application/json"
                 resp = requests.post(url, headers=headers, json=json_body, timeout=40)
