@@ -40,10 +40,13 @@ def get_vectorstore():
 
 
 def clean_model_output(text: str) -> str:
-    """Strip internal reasoning tags e.g. <think>...</think> from models like Qwen."""
+    """Strip internal reasoning tags and planning preambles from model responses."""
     if not text:
         return ""
+    # Strip <think>...</think> tags
     cleaned = re.sub(r"<think>[\s\S]*?<\/think>", "", text).strip()
+    # Strip conversational meta-commentary preambles
+    cleaned = re.sub(r"^(?:Sure!?|Certainly!?|Here is|Below is|I will|Let me|I'll format)[^\n]*\n+", "", cleaned, flags=re.IGNORECASE).strip()
     return cleaned
 
 
@@ -276,9 +279,10 @@ def answer_question(
             "- No Jargon / No Fake Examples: NEVER invent fictional courses (like Math 101) or give generic textbook lectures when student documents are provided.\n"
             "- Clean Formatting: Use clean markdown tables, bold numbers, and bullet points. Never write messy raw LaTeX formulas like [ \\text{GPA} = ... ].\n\n"
             "Grade Sheets & Transcripts:\n"
-            "1. Official CGPA First: State the official printed CGPA immediately at the top in bold (e.g. '**Your CGPA: 7.77**').\n"
-            "2. Summary Table: Provide a clean, compact Semester-wise SGPA summary table.\n"
-            "3. Detailed Course Breakdown: Show each semester with exact subject codes, course titles, credits, grades, and grade points from the document.\n\n"
+            "1. Direct Response Only: Begin immediately with the markdown tables. Do NOT output planning monologues (e.g. 'I will format this cleanly').\n"
+            "2. Official CGPA First: State the official printed CGPA immediately at the top in bold (e.g. '**Your CGPA: 7.77**').\n"
+            "3. Summary Table: Provide a clean, compact Semester-wise SGPA summary table.\n"
+            "4. Detailed Course Breakdown: Show each semester with exact subject codes, course titles, credits, grades, and grade points from the document.\n\n"
             "Study Notes & Technical Concepts:\n"
             "1. Plain-English Explanation: Explain the concept in 2-3 clear, simple sentences.\n"
             "2. Clean Code / Example: Provide a short, practical code snippet with comments if relevant.\n"
@@ -290,9 +294,10 @@ def answer_question(
             "You are CampusMind, a friendly, direct, and ultra-clear academic AI co-pilot for college students.\n\n"
             "Communication Directives:\n"
             "1. Simple, Direct & Conversational: Answer directly in simple, clear, everyday English. Avoid dense robotic textbook lectures or raw LaTeX math code.\n"
-            "2. No Code Unless Requested: Do NOT provide programming code blocks (like Python scripts) unless the student explicitly asks for code or programming solutions.\n"
-            "3. Clear Step-by-Step Guidance: When explaining academic concepts or formulas (like CGPA/SGPA calculation), explain the steps in simple words with a practical real-world example.\n"
-            "4. Upload Tip: If the question is about university marks or policies, kindly mention that uploading their grade sheet or syllabus PDF will allow exact automatic calculation."
+            "2. Direct Markdown Only: Do NOT output internal meta-thoughts or planning commentary.\n"
+            "3. No Code Unless Requested: Do NOT provide programming code blocks unless the student explicitly asks for code.\n"
+            "4. Clear Step-by-Step Guidance: When explaining academic concepts, explain the steps in simple words with a practical real-world example.\n"
+            "5. Upload Tip: If the question is about university marks or policies, kindly mention that uploading their grade sheet or syllabus PDF will allow exact automatic calculation."
         )
         user_content = f"Student Question: {question}"
 
@@ -314,9 +319,9 @@ def answer_question(
             completion = client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.2,
-                max_tokens=2500,
-                timeout=25.0
+                temperature=0.1,
+                max_tokens=3500,
+                timeout=30.0
             )
             raw_answer = completion.choices[0].message.content
             if raw_answer:
