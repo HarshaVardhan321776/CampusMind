@@ -1,9 +1,10 @@
 import os
 import numpy as np
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 import hashlib
 import re
+
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.embeddings import Embeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
@@ -46,8 +47,14 @@ class LightweightHashEmbeddings(Embeddings):
 
 embedding_function = LightweightHashEmbeddings()
 
+
+def get_embedding_function():
+    return embedding_function
+
+
 # Initialize OCR Engine for scanned/handwritten documents
 _ocr_engine = None
+
 
 def get_ocr_engine():
     global _ocr_engine
@@ -78,6 +85,7 @@ def extract_pdf_with_ocr(file_path: str) -> list[Document]:
         pdf = pdfium.PdfDocument(file_path)
         for idx in range(len(pdf)):
             page = pdf[idx]
+
             # Render page to bitmap image
             bitmap = page.render(scale=1.5)
             pil_image = bitmap.to_pil()
@@ -87,11 +95,15 @@ def extract_pdf_with_ocr(file_path: str) -> list[Document]:
             if ocr_res:
                 page_lines = [line[1] for line in ocr_res if line[1].strip()]
                 page_text = "\n".join(page_lines)
+
                 if len(page_text.strip()) > 10:
                     documents.append(
                         Document(
                             page_content=page_text.strip(),
-                            metadata={"source": file_path, "page": idx + 1}
+                            metadata={
+                                "source": file_path,
+                                "page": idx + 1
+                            }
                         )
                     )
     except Exception as e:
@@ -102,42 +114,63 @@ def extract_pdf_with_ocr(file_path: str) -> list[Document]:
 
 def load_document(file_path: str, file_type: str) -> list[Document]:
     """Load a PDF or DOCX file with automatic fallback to OCR for scanned documents."""
+
     if file_type == "docx":
         # 1. Try Docx2txtLoader
         try:
-            from langchain_community.document_loaders import Docx2txtLoader
             loader = Docx2txtLoader(file_path)
             docs = loader.load()
+
             if docs and sum(len(d.page_content.strip()) for d in docs) > 0:
                 return docs
+
         except Exception as e:
             print(f"[Docx2txtLoader Warning] on {file_path}: {e}")
 
-        # 2. Native python-docx fallback (handles paragraphs and tables)
+        # 2. Native python-docx fallback
         try:
             import docx
+
             doc = docx.Document(file_path)
             full_text = []
+
             for para in doc.paragraphs:
                 if para.text.strip():
                     full_text.append(para.text.strip())
+
             for table in doc.tables:
                 for row in table.rows:
-                    row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    row_text = " | ".join(
+                        cell.text.strip()
+                        for cell in row.cells
+                        if cell.text.strip()
+                    )
+
                     if row_text:
                         full_text.append(row_text)
+
             text = "\n\n".join(full_text)
+
             if text.strip():
-                return [Document(page_content=text.strip(), metadata={"source": file_path})]
+                return [
+                    Document(
+                        page_content=text.strip(),
+                        metadata={"source": file_path}
+                    )
+                ]
+
         except Exception as e:
             print(f"[python-docx Error] on {file_path}: {e}")
-            raise RuntimeError(f"Could not extract text from docx file: {e}")
+            raise RuntimeError(
+                f"Could not extract text from docx file: {e}"
+            )
 
         return []
 
     elif file_type == "pdf":
         # 1. Attempt digital text extraction with PyPDFLoader
         digital_docs = []
+
         try:
             loader = PyPDFLoader(file_path)
             digital_docs = loader.load()
@@ -145,16 +178,35 @@ def load_document(file_path: str, file_type: str) -> list[Document]:
             print(f"[PyPDFLoader Warning] on {file_path}: {e}")
 
         # Check quality of extracted digital text
-        total_text_length = sum(len(doc.page_content.strip()) for doc in digital_docs)
+        total_text_length = sum(
+            len(doc.page_content.strip())
+            for doc in digital_docs
+        )
+
         num_pages = len(digital_docs) if digital_docs else 1
         avg_chars_per_page = total_text_length / max(1, num_pages)
 
-        # If digital text is missing, very sparse (< 40 chars/page), or empty, trigger OCR
+        # If digital text is missing, very sparse, or empty, trigger OCR
         if total_text_length < 100 or avg_chars_per_page < 40:
-            print(f"[CampusMind] Scanned/Image PDF detected for '{os.path.basename(file_path)}' (only {total_text_length} digital chars found). Running OCR pipeline...")
+            print(
+                f"[CampusMind] Scanned/Image PDF detected for "
+                f"'{os.path.basename(file_path)}' "
+                f"(only {total_text_length} digital chars found). "
+                f"Running OCR pipeline..."
+            )
+
             ocr_docs = extract_pdf_with_ocr(file_path)
-            if ocr_docs and sum(len(d.page_content) for d in ocr_docs) > total_text_length:
-                print(f"[CampusMind] OCR successfully extracted {len(ocr_docs)} pages with {sum(len(d.page_content) for d in ocr_docs)} characters!")
+
+            if (
+                ocr_docs
+                and sum(len(d.page_content) for d in ocr_docs)
+                > total_text_length
+            ):
+                print(
+                    f"[CampusMind] OCR successfully extracted "
+                    f"{len(ocr_docs)} pages with "
+                    f"{sum(len(d.page_content) for d in ocr_docs)} characters!"
+                )
                 return ocr_docs
 
         # Ensure page numbers are 1-indexed for PyPDFLoader (which uses 0-indexed page numbers)
@@ -205,7 +257,10 @@ def delete_document_embeddings(document_id: int, user_id: int | None = None):
 def embed_and_store(chunks: list[Document], source_filename: str, document_id: int, user_id: int):
     """Generate embeddings for chunks and store them in ChromaDB with complete user and document metadata."""
     if not chunks:
-        print(f"[Embed Warning]: No text chunks to embed for {source_filename}")
+        print(
+            f"[Embed Warning]: No text chunks to embed "
+            f"for {source_filename}"
+        )
         return 0
 
     # Purge any previous embeddings for this document ID to prevent duplicate chunk buildup
@@ -224,9 +279,10 @@ def embed_and_store(chunks: list[Document], source_filename: str, document_id: i
 
     vectorstore = Chroma(
         collection_name=COLLECTION_NAME,
-        embedding_function=embedding_function,
+        embedding_function=get_embedding_function(),
         persist_directory=CHROMA_DIR,
     )
+
     vectorstore.add_documents(chunks)
     vectorstore.persist()
 

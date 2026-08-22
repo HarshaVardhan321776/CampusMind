@@ -4,7 +4,7 @@ import chromadb
 from groq import Groq
 from langchain_community.vectorstores import Chroma
 from app.core.config import settings
-from app.services.embeddings import embedding_function, CHROMA_DIR, COLLECTION_NAME
+from app.services.embeddings import get_embedding_function, CHROMA_DIR, COLLECTION_NAME
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
@@ -32,7 +32,7 @@ STOPWORDS = {
 def get_vectorstore():
     return Chroma(
         collection_name=COLLECTION_NAME,
-        embedding_function=embedding_function,
+        embedding_function=get_embedding_function(),
         persist_directory=CHROMA_DIR,
     )
 
