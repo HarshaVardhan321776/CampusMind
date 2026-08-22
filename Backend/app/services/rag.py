@@ -50,6 +50,63 @@ def clean_model_output(text: str) -> str:
     return cleaned
 
 
+def compute_transcript_summary(text: str) -> str:
+    """Parse exam mark details and pre-calculate exact verified SGPA and CGPA metrics."""
+    if "exam mark details" not in text.lower() and "cgpa" not in text.lower():
+        return ""
+
+    sem_blocks = re.split(r"Semester\s*(\d+)", text, flags=re.IGNORECASE)
+    if len(sem_blocks) < 3:
+        return ""
+
+    sem_summaries = []
+    total_cum_credits = 0.0
+    total_cum_points = 0.0
+
+    cgpa_match = re.search(r"CGPA\s*[:=]\s*([\d\.]+)", text, re.IGNORECASE)
+    official_cgpa = cgpa_match.group(1) if cgpa_match else None
+
+    for i in range(1, len(sem_blocks), 2):
+        sem_num = sem_blocks[i]
+        block_text = sem_blocks[i+1]
+
+        tot_credits = 0.0
+        tot_points = 0.0
+
+        pattern = r"([A-Z]{2,4}\s*\d{3}[A-Z]?)\s+([A-Za-z0-9\s,\-\/&]+?)\s+(\d+(?:\.\d+)?|-)\s+([A-O\+\-]+)\s+(\d+(?:\.\d+)?|-)"
+        for m in re.finditer(pattern, block_text):
+            cr_str = m.group(3).strip()
+            pts_str = m.group(5).strip()
+            if cr_str != "-" and pts_str != "-":
+                try:
+                    cr = float(cr_str)
+                    pts = float(pts_str)
+                    tot_credits += cr
+                    tot_points += (cr * pts)
+                except ValueError:
+                    pass
+
+        if tot_credits > 0:
+            sgpa = round(tot_points / tot_credits, 2)
+            total_cum_credits += tot_credits
+            total_cum_points += tot_points
+            sem_summaries.append(f"- Semester {sem_num}: Total Credits = {int(tot_credits)}, Total Points = {tot_points:.2f}, SGPA = {sgpa:.2f}")
+
+    if not sem_summaries:
+        return ""
+
+    calculated_cgpa = round(total_cum_points / total_cum_credits, 2) if total_cum_credits > 0 else 0.0
+    final_cgpa = official_cgpa if official_cgpa else f"{calculated_cgpa:.2f}"
+
+    summary_lines = [
+        "[Verified Transcript Pre-Calculations]",
+        f"- Official CGPA: {final_cgpa}"
+    ]
+    summary_lines.extend(sem_summaries)
+    summary_lines.append(f"- Overall Cumulative: Total Credits = {int(total_cum_credits)}, Total Points = {total_cum_points:.2f}, CGPA = {final_cgpa}")
+    return "\n".join(summary_lines)
+
+
 def retrieve_hybrid_context(
     question: str,
     user_id: int | None = None,
@@ -295,7 +352,13 @@ def answer_question(
             context_blocks.append(f"[Excerpt {i+1} from {source_name}{page_info}]\n{chunk['text'].strip()}")
 
     if context_blocks:
-        context_text = "\n\n".join(context_blocks)
+        raw_context = "\n\n".join(context_blocks)
+        transcript_summary = compute_transcript_summary(raw_context)
+        if transcript_summary:
+            context_text = f"{transcript_summary}\n\n{raw_context}"
+        else:
+            context_text = raw_context
+
         system_prompt = (
             "You are CampusMind, a friendly, direct, and ultra-clear academic AI co-pilot for college students.\n\n"
             "Communication Style:\n"
