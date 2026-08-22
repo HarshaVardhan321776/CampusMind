@@ -9,14 +9,17 @@ from app.services.embeddings import get_embedding_function, CHROMA_DIR, COLLECTI
 
 client = Groq(api_key=settings.GROQ_API_KEY)
 
-# Primary & Fallback Groq models available (fast & large context capacity)
+# Primary & Fallback Groq models (safeguard model excluded — 8k TPM cap on free tier)
 GROQ_MODELS = [
     "openai/gpt-oss-120b",
     "openai/gpt-oss-20b",
     "qwen/qwen3.6-27b",
     "groq/compound-mini",
-    "openai/gpt-oss-safeguard-20b"
 ]
+
+# Groq on-demand tier allows ~8000 tokens total per request (input + max_output).
+GROQ_TOTAL_TOKEN_BUDGET = 7500
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
 
 STOPWORDS = {
     "what", "is", "a", "an", "the", "in", "on", "at", "to", "for", "of", "and", "or",
@@ -30,6 +33,78 @@ STOPWORDS = {
     "i", "my", "we", "our", "you", "your", "they", "their", "it", "its", "this", "that",
     "matter", "find", "show", "use", "using", "used", "make", "get", "need", "know", "see"
 }
+
+
+def estimate_tokens(text: str) -> int:
+    """Rough token estimate (~4 chars per token)."""
+    return max(1, len(text) // 4)
+
+
+def estimate_messages_tokens(messages: list[dict]) -> int:
+    return sum(estimate_tokens(m.get("content") or "") for m in messages) + (len(messages) * 4)
+
+
+def trim_document_context(context_text: str, max_chars: int) -> str:
+    if len(context_text) <= max_chars:
+        return context_text
+    return (
+        context_text[:max_chars]
+        + "\n\n[... additional document context omitted to fit model limits ...]"
+    )
+
+
+def fit_messages_to_budget(
+    messages: list[dict],
+    max_output_tokens: int,
+) -> tuple[list[dict], int]:
+    """
+    Trim chat history and document context so input + max_output stays within
+    Groq on-demand token budget. Returns (fitted messages, adjusted max_output).
+    """
+    input_budget = GROQ_TOTAL_TOKEN_BUDGET - max_output_tokens
+    fitted = [dict(m) for m in messages]
+
+    def total_input_tokens() -> int:
+        return estimate_messages_tokens(fitted)
+
+    # 1. Trim document excerpts in the last user message
+    if fitted and fitted[-1].get("role") == "user":
+        user_msg = fitted[-1]
+        content = user_msg["content"]
+        marker = "Document Excerpts:\n"
+        if marker in content:
+            prefix, rest = content.split(marker, 1)
+            question_part = ""
+            if "\n\nStudent Question: " in rest:
+                doc_part, question_part = rest.split("\n\nStudent Question: ", 1)
+                question_part = "\n\nStudent Question: " + question_part
+            else:
+                doc_part = rest
+
+            while total_input_tokens() > input_budget and len(doc_part) > 500:
+                doc_part = trim_document_context(doc_part, int(len(doc_part) * 0.75))
+                user_msg["content"] = f"{prefix}{marker}{doc_part}{question_part}"
+
+    # 2. Drop oldest history turns (keep system + current user)
+    while total_input_tokens() > input_budget and len(fitted) > 2:
+        # Remove first non-system message
+        for i, m in enumerate(fitted):
+            if m.get("role") != "system":
+                fitted.pop(i)
+                break
+
+    # 3. Shorten remaining history messages
+    for m in fitted[:-1]:
+        content = m.get("content") or ""
+        if len(content) > 1500:
+            m["content"] = content[:1500] + "..."
+
+    # 4. If still over budget, shrink max_output
+    adjusted_output = max_output_tokens
+    while total_input_tokens() + adjusted_output > GROQ_TOTAL_TOKEN_BUDGET and adjusted_output > 1024:
+        adjusted_output -= 512
+
+    return fitted, adjusted_output
 
 
 def get_vectorstore():
@@ -304,7 +379,7 @@ def retrieve_hybrid_context(
         if scored_candidates and top_score >= SOFT_FALLBACK_THRESHOLD:
             fallback_chunks = []
             fallback_sources = []
-            for c in scored_candidates[:10]:
+            for c in scored_candidates[:8]:
                 fallback_chunks.append(c)
                 if c["source"] not in fallback_sources:
                     fallback_sources.append(c["source"])
@@ -344,9 +419,9 @@ def retrieve_hybrid_context(
                 accepted_chunks.append(chk)
                 if target_src not in accepted_sources:
                     accepted_sources.append(target_src)
-                if len(accepted_chunks) >= 20:
+                if len(accepted_chunks) >= 14:
                     break
-            if len(accepted_chunks) >= 20:
+            if len(accepted_chunks) >= 14:
                 break
     else:
         for c in scored_candidates:
@@ -354,7 +429,7 @@ def retrieve_hybrid_context(
                 accepted_chunks.append(c)
                 if c["source"] not in accepted_sources:
                     accepted_sources.append(c["source"])
-                if len(accepted_chunks) >= 18:
+                if len(accepted_chunks) >= 12:
                     break
 
     return accepted_chunks, accepted_sources
@@ -440,18 +515,19 @@ def answer_question(
     messages = [{"role": "system", "content": system_prompt}]
 
     if chat_history:
-        messages.extend(chat_history[-10:])
+        messages.extend(chat_history[-8:])
 
     messages.append({
         "role": "user",
         "content": user_content,
     })
 
+    messages, max_output_tokens = fit_messages_to_budget(messages, DEFAULT_MAX_OUTPUT_TOKENS)
+
     # Call LLM with fallback — keep best partial answer if all models hit token limit
     answer = None
     partial_answer = None
     last_error = None
-    max_output_tokens = 8192
 
     for model_name in GROQ_MODELS:
         try:
@@ -478,8 +554,29 @@ def answer_question(
                 if answer:
                     break
         except Exception as e:
+            err_str = str(e).lower()
             print(f"[Groq Model {model_name} Error]: {e}")
             last_error = e
+            # Retry same model with tighter budget on token-limit errors
+            if "413" in err_str or "too large" in err_str or "rate_limit" in err_str:
+                messages, max_output_tokens = fit_messages_to_budget(messages, max(1024, max_output_tokens // 2))
+                try:
+                    completion = client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        temperature=0.4,
+                        max_tokens=max_output_tokens,
+                        timeout=120.0,
+                    )
+                    choice = completion.choices[0]
+                    raw_answer = choice.message.content
+                    if raw_answer:
+                        answer = clean_model_output(raw_answer)
+                        if answer:
+                            break
+                except Exception as retry_e:
+                    print(f"[Groq Retry {model_name} Error]: {retry_e}")
+                    last_error = retry_e
 
     if not answer and partial_answer:
         answer = partial_answer + "\n\n---\n*Response was trimmed due to length. Ask a follow-up for more detail on any section.*"
