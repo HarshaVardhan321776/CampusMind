@@ -7,7 +7,15 @@ from langchain_community.vectorstores import Chroma
 from app.core.config import settings
 from app.services.embeddings import get_embedding_function, CHROMA_DIR, COLLECTION_NAME
 
-client = Groq(api_key=settings.GROQ_API_KEY)
+def get_groq_api_key() -> str:
+    from app.core.config import Settings
+    key = os.environ.get("GROQ_API_KEY") or Settings().GROQ_API_KEY or ""
+    return key.strip()
+
+def get_groq_client() -> Groq:
+    return Groq(api_key=get_groq_api_key())
+
+client = None  # Instantiated on-demand with active key
 
 # Primary & Fallback Groq models (safeguard model excluded — 8k TPM cap on free tier)
 GROQ_MODELS = [
@@ -524,6 +532,27 @@ def answer_question(
 
     messages, max_output_tokens = fit_messages_to_budget(messages, DEFAULT_MAX_OUTPUT_TOKENS)
 
+    groq_api_key = get_groq_api_key()
+
+    # If Groq API key is not configured, provide the retrieved document context directly
+    if not groq_api_key:
+        if accepted_chunks:
+            excerpts = "\n\n".join([f"> \"{c['text'].strip()[:350]}...\"" for c in accepted_chunks[:3]])
+            answer = (
+                "**Grounded Document Excerpts Retrieved:**\n\n"
+                f"{excerpts}\n\n"
+                "---\n"
+                "*Note: Document context was successfully retrieved via ChromaDB. To enable full LLM synthesis, configure your `GROQ_API_KEY` in `Backend/.env`.*"
+            )
+        else:
+            answer = (
+                "No `GROQ_API_KEY` is configured in `Backend/.env`. "
+                "Please add your Groq API key to generate conversational AI responses, or upload course documents on the Documents page to search your study materials."
+            )
+        return {"answer": answer, "sources": sources}
+
+    groq_client = Groq(api_key=groq_api_key)
+
     # Call LLM with fallback — keep best partial answer if all models hit token limit
     answer = None
     partial_answer = None
@@ -531,7 +560,7 @@ def answer_question(
 
     for model_name in GROQ_MODELS:
         try:
-            completion = client.chat.completions.create(
+            completion = groq_client.chat.completions.create(
                 model=model_name,
                 messages=messages,
                 temperature=0.4,
@@ -561,7 +590,7 @@ def answer_question(
             if "413" in err_str or "too large" in err_str or "rate_limit" in err_str:
                 messages, max_output_tokens = fit_messages_to_budget(messages, max(1024, max_output_tokens // 2))
                 try:
-                    completion = client.chat.completions.create(
+                    completion = groq_client.chat.completions.create(
                         model=model_name,
                         messages=messages,
                         temperature=0.4,
